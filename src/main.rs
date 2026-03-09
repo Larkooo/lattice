@@ -30,7 +30,7 @@ use std::{
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Agent-first SSH interface with tabbed TUI")]
+#[command(author, version, about = "Tmux-backed TUI for managing coding agents")]
 struct Cli {
     #[arg(long, help = "Auto refresh interval in seconds")]
     refresh_seconds: Option<u64>,
