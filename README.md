@@ -1,6 +1,6 @@
-# agentssh
+# lattice
 
-`agentssh` is an SSH-first, tabbed interface for running and managing coding agents (`codex`, `claude`, etc.) on your own VPS.
+`lattice` is a tmux-backed, tabbed interface for running and managing coding agents (`codex`, `claude`, etc.) on your own machine or VPS.
 
 The design is inspired by the `terminal.shop` terminal experience:
 - top tab bar
@@ -10,10 +10,10 @@ The design is inspired by the `terminal.shop` terminal experience:
 
 ## Architecture
 
-`agentssh` is agent-first, but keeps runtime complexity low by using `tmux` for PTY/session durability.
+`lattice` is agent-first, but keeps runtime complexity low by using `tmux` for PTY/session durability.
 
 - `sshd` handles remote access
-- `agentssh` handles agent discovery, tabs, summaries, and controls
+- `lattice` handles agent discovery, tabs, summaries, and controls
 - `tmux` handles durable sessions and attach/detach behavior
 
 ## What it does
@@ -42,7 +42,7 @@ cargo build --release
 2. Run:
 
 ```bash
-./target/release/agentssh
+./target/release/lattice
 ```
 
 3. Inside the app:
@@ -57,11 +57,11 @@ cargo build --release
 
 Use a dedicated user so SSH lands directly in the manager UI.
 
-Example (`/etc/ssh/sshd_config.d/agentssh.conf`):
+Example (`/etc/ssh/sshd_config.d/lattice.conf`):
 
 ```text
 Match User agentops
-    ForceCommand /usr/local/bin/agentssh
+    ForceCommand /usr/local/bin/lattice
     PermitTTY yes
     X11Forwarding no
     AllowTcpForwarding no

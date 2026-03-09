@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn browser_has_use_entry_first() {
         let root = std::env::temp_dir().join(format!(
-            "agentssh-test-{}",
+            "lattice-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time ok")
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn activate_parent_changes_directory() {
         let root = std::env::temp_dir().join(format!(
-            "agentssh-test-{}",
+            "lattice-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time ok")
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn create_directory_moves_into_new_path() {
         let root = std::env::temp_dir().join(format!(
-            "agentssh-test-{}",
+            "lattice-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time ok")

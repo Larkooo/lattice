@@ -119,7 +119,7 @@ pub fn config_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_owned());
     PathBuf::from(home)
         .join(".config")
-        .join("agentssh")
+        .join("lattice")
         .join("config.toml")
 }
 
@@ -133,7 +133,7 @@ pub fn load_config() -> AppConfig {
     let file: ConfigFile = match toml::from_str(&contents) {
         Ok(f) => f,
         Err(err) => {
-            eprintln!("agentssh: warning: failed to parse {}: {err}", path.display());
+            eprintln!("lattice: warning: failed to parse {}: {err}", path.display());
             return AppConfig::default();
         }
     };

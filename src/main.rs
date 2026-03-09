@@ -169,7 +169,7 @@ impl App {
         if !self.tmux_available {
             self.warning = Some(Warning {
                 title: "tmux not found".to_owned(),
-                message: "agentssh requires tmux to manage agent sessions.".to_owned(),
+                message: "lattice requires tmux to manage agent sessions.".to_owned(),
                 details: vec![
                     "install via your package manager:".to_owned(),
                     "  brew install tmux".to_owned(),
@@ -184,7 +184,7 @@ impl App {
         if self.available_agents.is_empty() {
             self.warning = Some(Warning {
                 title: "no agent CLIs found".to_owned(),
-                message: "agentssh needs at least one supported agent CLI in PATH.".to_owned(),
+                message: "lattice needs at least one supported agent CLI in PATH.".to_owned(),
                 details: vec![
                     "supported agents:".to_owned(),
                     "  claude    - Claude Code".to_owned(),
@@ -851,7 +851,7 @@ fn handle_main_key(
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        let split_name = format!("agentssh_split_{ts}");
+                        let split_name = format!("lattice_split_{ts}");
                         match tmux::create_split_session(&split_name, &targets) {
                             Ok(()) => {
                                 let attach_result =
@@ -1288,7 +1288,7 @@ fn draw_warning_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
         .style(Style::default().bg(t.bg))
         .title(Line::from(vec![
             Span::styled(
-                " agentssh ",
+                " lattice ",
                 Style::default().fg(t.yellow).add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -1338,13 +1338,13 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
 
 /// Renders the header as a connected bordered table row:
 /// ┌──────────┬──────────┬──────────┐
-/// │ agentssh │  s shop  │  a acct  │
+/// │ lattice │  s shop  │  a acct  │
 /// └──────────┴──────────┴──────────┘
 fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
     let w = area.width as usize;
 
-    // Cell 0 = "agentssh" brand (maps to dashboard / tab 0)
+    // Cell 0 = "lattice" brand (maps to dashboard / tab 0)
     // Cell 1 = "s sessions" shortcut
     // Cell 2+ = instance tabs
     struct TabCell {
@@ -1362,7 +1362,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let mut cells: Vec<TabCell> = Vec::new();
     cells.push(TabCell {
-        label: "agentssh".to_owned(),
+        label: "lattice".to_owned(),
         is_selected: app.selected_tab == 0,
         is_in_split: false,
     });

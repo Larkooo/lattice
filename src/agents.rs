@@ -166,9 +166,9 @@ pub fn needs_title_injection(agent: &AgentDefinition) -> bool {
     agent.prompt_flag.is_none()
 }
 
-/// Path to the title file for a session: `/tmp/agentssh_{name}.title`
+/// Path to the title file for a session: `/tmp/lattice_{name}.title`
 pub fn title_file_path(session_name: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/agentssh_{session_name}.title"))
+    PathBuf::from(format!("/tmp/lattice_{session_name}.title"))
 }
 
 /// Read the title file for a session. Returns empty string if missing or unreadable.
@@ -196,7 +196,7 @@ pub fn build_managed_session_name(agent_id: &str) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     // Use underscores — dots are special in tmux target syntax (session.window.pane)
-    format!("agentssh_{agent_id}_{ts}")
+    format!("lattice_{agent_id}_{ts}")
 }
 
 pub fn short_instance_name(session_name: &str) -> String {
@@ -210,7 +210,7 @@ pub fn short_instance_name(session_name: &str) -> String {
 ///
 /// Priority:
 /// 1. `title_override` — content read from the session's title file
-///    (`/tmp/agentssh_{name}.title`), written by the agent itself.
+///    (`/tmp/lattice_{name}.title`), written by the agent itself.
 /// 2. `pane_title` — agents like Claude Code set this via terminal escape
 ///    sequences.  Ignore default shell titles (e.g. "zsh", "bash").
 /// 3. Basename of `pane_current_path` (e.g. `/Users/me/my-app` → `"my-app"`).
@@ -281,8 +281,13 @@ pub fn managed_session_agent_id(session_name: &str) -> Option<String> {
 }
 
 fn split_managed_session_name(session_name: &str) -> Option<(&str, &str)> {
-    // Support both old "agentssh.agent.ts" and new "agentssh_agent_ts" formats
-    let (prefix, agent, suffix) = if session_name.starts_with("agentssh_") {
+    // Support both legacy "agentssh.*.*" sessions and current "lattice_*_*"
+    // sessions so existing tmux sessions remain visible after the rename.
+    let (prefix, agent, suffix) = if session_name.starts_with("lattice_") {
+        let rest = &session_name["lattice_".len()..];
+        let pos = rest.rfind('_')?;
+        ("lattice", &rest[..pos], &rest[pos + 1..])
+    } else if session_name.starts_with("agentssh_") {
         let rest = &session_name["agentssh_".len()..];
         let pos = rest.rfind('_')?;
         ("agentssh", &rest[..pos], &rest[pos + 1..])
@@ -294,7 +299,7 @@ fn split_managed_session_name(session_name: &str) -> Option<(&str, &str)> {
         (prefix, agent, suffix)
     };
 
-    if prefix != "agentssh" || agent.is_empty() || suffix.is_empty() {
+    if !matches!(prefix, "lattice" | "agentssh") || agent.is_empty() || suffix.is_empty() {
         return None;
     }
     Some((agent, suffix))
@@ -362,12 +367,17 @@ mod tests {
             managed_session_agent_id("agentssh.codex.1234"),
             Some("codex".to_owned())
         );
+        assert_eq!(
+            managed_session_agent_id("lattice_codex_1234"),
+            Some("codex".to_owned())
+        );
         assert_eq!(managed_session_agent_id("random"), None);
     }
 
     #[test]
     fn short_name_compacts_managed_sessions() {
         assert_eq!(short_instance_name("agentssh.claude.999"), "claude_999");
+        assert_eq!(short_instance_name("lattice_claude_999"), "claude_999");
         assert_eq!(short_instance_name("handmade"), "handmade");
     }
 
@@ -384,7 +394,7 @@ mod tests {
     #[test]
     fn derive_title_prefers_title_override() {
         let title = derive_display_title(
-            "agentssh_codex_999",
+            "lattice_codex_999",
             "agents: /opt/homebrew/bin/codex",
             "/Users/me/agents",
             "Refactoring auth module",
@@ -395,7 +405,7 @@ mod tests {
     #[test]
     fn derive_title_prefers_pane_title() {
         let title = derive_display_title(
-            "agentssh_claude_999",
+            "lattice_claude_999",
             "Claude Code - my-project",
             "/Users/me/my-project",
             "",
@@ -405,7 +415,7 @@ mod tests {
 
     #[test]
     fn derive_title_ignores_shell_names_uses_path() {
-        let title = derive_display_title("agentssh_claude_999", "zsh", "/Users/me/my-app", "");
+        let title = derive_display_title("lattice_claude_999", "zsh", "/Users/me/my-app", "");
         assert_eq!(title, "my-app");
     }
 
@@ -413,7 +423,7 @@ mod tests {
     fn derive_title_ignores_default_terminal_title() {
         // "dirname: /path/to/binary" is the default terminal title format
         let title = derive_display_title(
-            "agentssh_codex_999",
+            "lattice_codex_999",
             "agents: /opt/homebrew/bin/codex",
             "/Users/me/agents",
             "",
@@ -424,13 +434,13 @@ mod tests {
     #[test]
     fn derive_title_returns_tilde_for_home() {
         let home = env::var("HOME").unwrap_or_else(|_| "/Users/testuser".to_owned());
-        let title = derive_display_title("agentssh_claude_999", "", &home, "");
+        let title = derive_display_title("lattice_claude_999", "", &home, "");
         assert_eq!(title, "~");
     }
 
     #[test]
     fn derive_title_falls_back_to_short_name() {
-        let title = derive_display_title("agentssh_claude_999", "", "", "");
+        let title = derive_display_title("lattice_claude_999", "", "", "");
         assert_eq!(title, "claude_999");
     }
 

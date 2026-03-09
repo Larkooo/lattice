@@ -14,8 +14,8 @@ pub fn is_git_repo(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Create a worktree inside `<repo-root>/.agentssh/worktrees/<short-id>/`
-/// on a new branch `agentssh/<short-id>` from HEAD.
+/// Create a worktree inside `<repo-root>/.lattice/worktrees/<short-id>/`
+/// on a new branch `lattice/<short-id>` from HEAD.
 /// Returns the worktree path.
 pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
     // Find the repo root
@@ -43,12 +43,12 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
         .as_secs()
         .to_string();
 
-    let worktree_dir = root.join(".agentssh").join("worktrees");
+    let worktree_dir = root.join(".lattice").join("worktrees");
     std::fs::create_dir_all(&worktree_dir)
         .with_context(|| format!("failed to create {}", worktree_dir.display()))?;
 
     let worktree_path = worktree_dir.join(&id);
-    let branch_name = format!("agentssh/{id}");
+    let branch_name = format!("lattice/{id}");
 
     let output = Command::new("git")
         .args([
@@ -71,19 +71,19 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
     Ok(worktree_path)
 }
 
-/// Check if `path` is inside a `.agentssh/worktrees/` directory.
+/// Check if `path` is inside a `.lattice/worktrees/` directory.
 /// Returns `true` if the path (or any parent) contains that segment.
 pub fn is_worktree_path(path: &Path) -> bool {
     let s = path.to_string_lossy();
-    s.contains("/.agentssh/worktrees/") || s.contains("\\.agentssh\\worktrees\\")
+    s.contains("/.lattice/worktrees/") || s.contains("\\.lattice\\worktrees\\")
 }
 
 /// Remove a worktree and its associated branch.
-/// `worktree_path` should be the path inside `.agentssh/worktrees/<id>/`.
-/// The branch name is derived as `agentssh/<id>`.
+/// `worktree_path` should be the path inside `.lattice/worktrees/<id>/`.
+/// The branch name is derived as `lattice/<id>`.
 pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
-    // Derive the repo root: go up from .agentssh/worktrees/<id>
-    // worktree_path = <root>/.agentssh/worktrees/<id>
+    // Derive the repo root: go up from .lattice/worktrees/<id>
+    // worktree_path = <root>/.lattice/worktrees/<id>
     let id = worktree_path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
@@ -133,7 +133,7 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
 
     // Delete the branch
     if !root.is_empty() && !id.is_empty() {
-        let branch = format!("agentssh/{id}");
+        let branch = format!("lattice/{id}");
         let _ = Command::new("git")
             .args(["-C", &root, "branch", "-D", &branch])
             .output();
