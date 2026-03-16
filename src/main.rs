@@ -60,6 +60,7 @@ enum SpawnStep {
     Path,
     NewDirectoryName,
     CloneUrl,
+    TypePath,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,7 @@ struct SpawnModal {
     browser: Browser,
     new_dir_name: String,
     clone_url: String,
+    typed_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,13 +145,15 @@ struct App {
 
 #[derive(Debug, Clone)]
 enum StartupCmdAddStep {
-    Path,
+    BrowsePath,
+    TypePath,
     Command,
 }
 
 #[derive(Debug, Clone)]
 struct StartupCmdAddState {
     step: StartupCmdAddStep,
+    browser: Browser,
     path: String,
     commands: Vec<String>,
     current_input: String,
@@ -389,6 +393,7 @@ impl App {
                     browser,
                     new_dir_name: String::new(),
                     clone_url: String::new(),
+                    typed_path: String::new(),
                 });
             }
             Err(err) => {
@@ -742,10 +747,53 @@ fn handle_modal_key(app: &mut App, code: KeyCode) {
                         modal.step = SpawnStep::CloneUrl;
                         modal.clone_url.clear();
                     }
+                    Ok(ActivateResult::StartTypePath) => {
+                        modal.step = SpawnStep::TypePath;
+                        modal.typed_path = modal.browser.cwd().to_string_lossy().to_string();
+                    }
                     Err(err) => {
                         status_override = Some(format!("Path navigation failed: {err}"));
                     }
                 },
+                _ => {}
+            },
+            SpawnStep::TypePath => match code {
+                KeyCode::Esc => {
+                    modal.step = SpawnStep::Path;
+                    modal.typed_path.clear();
+                }
+                KeyCode::Enter => {
+                    let input = modal.typed_path.trim().to_owned();
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let expanded = if input.starts_with('~') {
+                        input.replacen('~', &home, 1)
+                    } else {
+                        input
+                    };
+                    let path = std::path::Path::new(&expanded);
+                    if path.is_dir() {
+                        match modal.browser.navigate_to(path) {
+                            Ok(()) => {
+                                modal.step = SpawnStep::Path;
+                                modal.typed_path.clear();
+                            }
+                            Err(err) => {
+                                status_override =
+                                    Some(format!("Cannot navigate to path: {err}"));
+                            }
+                        }
+                    } else {
+                        status_override = Some("Not a valid directory".to_owned());
+                    }
+                }
+                KeyCode::Backspace => {
+                    modal.typed_path.pop();
+                }
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        modal.typed_path.push(c);
+                    }
+                }
                 _ => {}
             },
             SpawnStep::NewDirectoryName => match code {
@@ -1146,32 +1194,103 @@ fn handle_settings_key(app: &mut App, code: KeyCode) {
 fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
     // If we're in the add flow, handle that first.
     if let Some(ref mut state) = app.startup_cmds_adding {
-        match code {
-            KeyCode::Esc => {
-                app.startup_cmds_adding = None;
-            }
-            KeyCode::Backspace => {
-                state.current_input.pop();
-            }
-            KeyCode::Char(c) => {
-                state.current_input.push(c);
-            }
-            KeyCode::Enter => match state.step {
-                StartupCmdAddStep::Path => {
-                    if state.current_input.trim().is_empty() {
-                        app.startup_cmds_adding = None;
-                        return;
-                    }
-                    state.path = state.current_input.trim().to_owned();
-                    state.current_input.clear();
-                    state.step = StartupCmdAddStep::Command;
+        match state.step {
+            StartupCmdAddStep::BrowsePath => match code {
+                KeyCode::Esc => {
+                    app.startup_cmds_adding = None;
                 }
-                StartupCmdAddStep::Command => {
+                KeyCode::Char('j') | KeyCode::Down => state.browser.next(),
+                KeyCode::Char('k') | KeyCode::Up => state.browser.previous(),
+                KeyCode::PageDown => {
+                    for _ in 0..10 {
+                        state.browser.next();
+                    }
+                }
+                KeyCode::PageUp => {
+                    for _ in 0..10 {
+                        state.browser.previous();
+                    }
+                }
+                KeyCode::Enter => match state.browser.activate_selected() {
+                    Ok(ActivateResult::Selected(path)) => {
+                        state.path = path.to_string_lossy().to_string();
+                        state.step = StartupCmdAddStep::Command;
+                    }
+                    Ok(ActivateResult::StartTypePath) => {
+                        state.current_input =
+                            state.browser.cwd().to_string_lossy().to_string();
+                        state.step = StartupCmdAddStep::TypePath;
+                    }
+                    Ok(ActivateResult::ChangedDirectory) => {}
+                    Ok(_) => {} // ignore create dir / clone in this context
+                    Err(err) => {
+                        app.status_line = format!("Path navigation failed: {err}");
+                    }
+                },
+                _ => {}
+            },
+            StartupCmdAddStep::TypePath => match code {
+                KeyCode::Esc => {
+                    state.step = StartupCmdAddStep::BrowsePath;
+                    state.current_input.clear();
+                }
+                KeyCode::Backspace => {
+                    state.current_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        state.current_input.push(c);
+                    }
+                }
+                KeyCode::Enter => {
+                    let input = state.current_input.trim().to_owned();
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let expanded = if input.starts_with('~') {
+                        input.replacen('~', &home, 1)
+                    } else {
+                        input.clone()
+                    };
+                    let path = std::path::Path::new(&expanded);
+                    if path.is_dir() {
+                        match state.browser.navigate_to(path) {
+                            Ok(()) => {
+                                state.step = StartupCmdAddStep::BrowsePath;
+                                state.current_input.clear();
+                            }
+                            Err(err) => {
+                                app.status_line =
+                                    format!("Cannot navigate to path: {err}");
+                            }
+                        }
+                    } else {
+                        app.status_line = "Not a valid directory".to_owned();
+                    }
+                }
+                _ => {}
+            },
+            StartupCmdAddStep::Command => match code {
+                KeyCode::Esc => {
+                    if state.commands.is_empty() && state.current_input.is_empty() {
+                        app.startup_cmds_adding = None;
+                    } else {
+                        // Go back, discard current command input
+                        state.current_input.clear();
+                        if state.commands.is_empty() {
+                            state.step = StartupCmdAddStep::BrowsePath;
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    state.current_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    state.current_input.push(c);
+                }
+                KeyCode::Enter => {
                     let input = state.current_input.trim().to_owned();
                     if input.is_empty() {
                         // Empty input = done adding commands
                         if state.commands.is_empty() {
-                            // No commands added, cancel
                             app.startup_cmds_adding = None;
                             return;
                         }
@@ -1182,7 +1301,9 @@ fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
                         app.config.startup_commands.push(entry);
                         app.startup_cmds_adding = None;
                         match config::save_config(&app.config) {
-                            Ok(()) => app.status_line = "Startup command rule added".to_owned(),
+                            Ok(()) => {
+                                app.status_line = "Startup command rule added".to_owned()
+                            }
                             Err(e) => app.status_line = format!("Save failed: {e}"),
                         }
                     } else {
@@ -1190,8 +1311,8 @@ fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
                         state.current_input.clear();
                     }
                 }
+                _ => {}
             },
-            _ => {}
         }
         return;
     }
@@ -1217,12 +1338,30 @@ fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char('a') => {
-            app.startup_cmds_adding = Some(StartupCmdAddState {
-                step: StartupCmdAddStep::Path,
-                path: String::new(),
-                commands: Vec::new(),
-                current_input: String::new(),
-            });
+            let start_dir = app
+                .config
+                .default_spawn_dir
+                .clone()
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(|s| s.to_owned()))
+                })
+                .unwrap_or_else(|| "/".to_owned());
+            match Browser::new(std::path::PathBuf::from(&start_dir)) {
+                Ok(browser) => {
+                    app.startup_cmds_adding = Some(StartupCmdAddState {
+                        step: StartupCmdAddStep::BrowsePath,
+                        browser,
+                        path: String::new(),
+                        commands: Vec::new(),
+                        current_input: String::new(),
+                    });
+                }
+                Err(err) => {
+                    app.status_line = format!("Cannot open path browser: {err}");
+                }
+            }
         }
         KeyCode::Char('x') => {
             if count > 0 && app.startup_cmds_selected < count {
@@ -1259,15 +1398,108 @@ fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
 
     if let Some(ref state) = app.startup_cmds_adding {
         match state.step {
-            StartupCmdAddStep::Path => {
+            StartupCmdAddStep::BrowsePath => {
                 lines.push(Line::from(Span::styled(
-                    "enter directory path:",
+                    "select directory for startup commands",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  cwd ", Style::default().fg(t.muted)),
+                    Span::styled(
+                        format!("{}", state.browser.cwd().display()),
+                        Style::default().fg(t.text),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+
+                let entries = state.browser.entries();
+                let capacity = area.height.saturating_sub(12) as usize;
+                let (start, end) =
+                    visible_range(entries.len(), state.browser.selected(), capacity.max(1));
+
+                if start > 0 {
+                    lines.push(Line::from(Span::styled(
+                        "  ...",
+                        Style::default().fg(t.muted),
+                    )));
+                }
+
+                for (i, entry) in entries.iter().enumerate().skip(start).take(end - start) {
+                    // Skip create dir and clone entries — not relevant here
+                    if matches!(
+                        entry.kind,
+                        EntryKind::CreateDirectory | EntryKind::CloneFromUrl
+                    ) {
+                        continue;
+                    }
+                    let icon = match entry.kind {
+                        EntryKind::SelectCurrent => "\u{2192}",
+                        EntryKind::TypePath => "/",
+                        EntryKind::Parent => "\u{2190}",
+                        EntryKind::Directory => " ",
+                        _ => " ",
+                    };
+
+                    let style = if i == state.browser.selected() {
+                        Style::default()
+                            .fg(t.bg)
+                            .bg(t.highlight_bg)
+                            .add_modifier(Modifier::BOLD)
+                    } else if matches!(entry.kind, EntryKind::TypePath) {
+                        Style::default().fg(t.accent)
+                    } else if matches!(entry.kind, EntryKind::SelectCurrent) {
+                        Style::default().fg(t.green)
+                    } else {
+                        Style::default().fg(t.text)
+                    };
+
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {}", icon, entry.label),
+                        style,
+                    )));
+                }
+
+                if end < entries.len() {
+                    lines.push(Line::from(Span::styled(
+                        "  ...",
+                        Style::default().fg(t.muted),
+                    )));
+                }
+
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" select   ", desc_style),
+                    Span::styled("\u{2191}/\u{2193}", key_style),
+                    Span::styled(" navigate   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ]));
+            }
+            StartupCmdAddStep::TypePath => {
+                lines.push(Line::from(Span::styled(
+                    "enter path (~ supported)",
                     Style::default().fg(t.accent),
                 )));
                 lines.push(Line::from(Span::styled(
-                    format!("  {}_", state.current_input),
-                    Style::default().fg(t.text),
+                    if state.current_input.is_empty() {
+                        "  _".to_owned()
+                    } else {
+                        format!("  {}_", state.current_input)
+                    },
+                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                 )));
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" go to path   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" back", desc_style),
+                ]));
             }
             StartupCmdAddStep::Command => {
                 lines.push(Line::from(Span::styled(
@@ -1288,27 +1520,33 @@ fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
                     format!("  {}_", state.current_input),
                     Style::default().fg(t.text),
                 )));
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" add command   ", desc_style),
+                    Span::styled("enter", key_style),
+                    Span::styled(" (empty) save   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ]));
             }
         }
-        lines.push(Line::from(""));
-        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
-        let desc_style = Style::default().fg(t.muted);
-        lines.push(Line::from(vec![
-            Span::styled("enter", key_style),
-            Span::styled(" confirm   ", desc_style),
-            Span::styled("esc", key_style),
-            Span::styled(" cancel", desc_style),
-        ]));
     } else if app.config.startup_commands.is_empty() {
         lines.push(Line::from(Span::styled(
             "no startup command rules configured",
             Style::default().fg(t.muted),
         )));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "press 'a' to add a rule",
-            Style::default().fg(t.muted),
-        )));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("a", key_style),
+            Span::styled(" add rule   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" back", desc_style),
+        ]));
     } else {
         for (i, entry) in app.config.startup_commands.iter().enumerate() {
             let selected = i == app.startup_cmds_selected;
@@ -2295,6 +2533,7 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
     let path_step_style = if modal.step == SpawnStep::Path
         || modal.step == SpawnStep::NewDirectoryName
         || modal.step == SpawnStep::CloneUrl
+        || modal.step == SpawnStep::TypePath
     {
         Style::default().fg(t.accent)
     } else {
@@ -2410,6 +2649,7 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
                     EntryKind::SelectCurrent => "\u{2192}",
                     EntryKind::CreateDirectory => "+",
                     EntryKind::CloneFromUrl => "\u{21e3}",
+                    EntryKind::TypePath => "/",
                     EntryKind::Parent => "\u{2190}",
                     EntryKind::Directory => " ",
                 };
@@ -2419,7 +2659,7 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
                         .fg(t.bg)
                         .bg(t.highlight_bg)
                         .add_modifier(Modifier::BOLD)
-                } else if matches!(entry.kind, EntryKind::CreateDirectory | EntryKind::CloneFromUrl) {
+                } else if matches!(entry.kind, EntryKind::CreateDirectory | EntryKind::CloneFromUrl | EntryKind::TypePath) {
                     Style::default().fg(t.accent)
                 } else if matches!(entry.kind, EntryKind::SelectCurrent) {
                     Style::default().fg(t.green)
@@ -2522,6 +2762,34 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
                     Style::default().fg(t.text).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" clone   ", Style::default().fg(t.muted)),
+                Span::styled(
+                    "esc",
+                    Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" back", Style::default().fg(t.muted)),
+            ]));
+        }
+        SpawnStep::TypePath => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  enter path (~ supported)",
+                Style::default().fg(t.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                if modal.typed_path.is_empty() {
+                    "  _".to_owned()
+                } else {
+                    format!("  {}_", modal.typed_path)
+                },
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  enter",
+                    Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" go to path   ", Style::default().fg(t.muted)),
                 Span::styled(
                     "esc",
                     Style::default().fg(t.text).add_modifier(Modifier::BOLD),

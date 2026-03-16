@@ -9,6 +9,7 @@ pub enum EntryKind {
     SelectCurrent,
     CreateDirectory,
     CloneFromUrl,
+    TypePath,
     Parent,
     Directory,
 }
@@ -32,6 +33,7 @@ pub enum ActivateResult {
     Selected(PathBuf),
     StartCreateDirectory,
     StartCloneFromUrl,
+    StartTypePath,
     ChangedDirectory,
 }
 
@@ -87,12 +89,22 @@ impl Browser {
             EntryKind::SelectCurrent => Ok(ActivateResult::Selected(self.cwd.clone())),
             EntryKind::CreateDirectory => Ok(ActivateResult::StartCreateDirectory),
             EntryKind::CloneFromUrl => Ok(ActivateResult::StartCloneFromUrl),
+            EntryKind::TypePath => Ok(ActivateResult::StartTypePath),
             EntryKind::Parent | EntryKind::Directory => {
                 self.cwd = entry.path;
                 self.refresh()?;
                 Ok(ActivateResult::ChangedDirectory)
             }
         }
+    }
+
+    pub fn navigate_to(&mut self, path: &Path) -> Result<()> {
+        if !path.is_dir() {
+            return Err(anyhow::anyhow!("not a directory: {}", path.display()));
+        }
+        self.cwd = path.to_path_buf();
+        self.refresh()?;
+        Ok(())
     }
 
     pub fn create_directory(&mut self, name: &str) -> Result<PathBuf> {
@@ -145,6 +157,11 @@ impl Browser {
         entries.push(Entry {
             kind: EntryKind::CloneFromUrl,
             label: "Clone from URL...".to_owned(),
+            path: self.cwd.clone(),
+        });
+        entries.push(Entry {
+            kind: EntryKind::TypePath,
+            label: "Type path directly...".to_owned(),
             path: self.cwd.clone(),
         });
 
