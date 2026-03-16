@@ -12,6 +12,8 @@ pub struct AgentDefinition {
     pub launch: String,
     /// CLI flag to inject a system prompt, e.g. `"--append-system-prompt"`.
     pub prompt_flag: Option<String>,
+    /// CLI flag to bypass permission prompts, e.g. `"--dangerously-skip-permissions"`.
+    pub bypass_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +23,7 @@ struct KnownAgent {
     binary: &'static str,
     launch: &'static str,
     prompt_flag: Option<&'static str>,
+    bypass_flag: Option<&'static str>,
 }
 
 /// Instruction appended via the agent's system-prompt flag so it keeps the
@@ -36,6 +39,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "codex",
         launch: "codex",
         prompt_flag: None,
+        bypass_flag: Some("--full-auto"),
     },
     KnownAgent {
         id: "claude",
@@ -43,6 +47,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "claude",
         launch: "claude",
         prompt_flag: Some("--append-system-prompt"),
+        bypass_flag: Some("--dangerously-skip-permissions"),
     },
     KnownAgent {
         id: "aider",
@@ -50,6 +55,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "aider",
         launch: "aider",
         prompt_flag: None,
+        bypass_flag: Some("--yes-always"),
     },
     KnownAgent {
         id: "gemini",
@@ -57,6 +63,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "gemini",
         launch: "gemini",
         prompt_flag: None,
+        bypass_flag: None,
     },
     KnownAgent {
         id: "opencode",
@@ -64,6 +71,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "opencode",
         launch: "opencode",
         prompt_flag: None,
+        bypass_flag: None,
     },
 ];
 
@@ -80,6 +88,7 @@ pub fn detect_available_agents(
                 binary: agent.binary.to_owned(),
                 launch: full_path.to_string_lossy().to_string(),
                 prompt_flag: agent.prompt_flag.map(ToOwned::to_owned),
+                bypass_flag: agent.bypass_flag.map(ToOwned::to_owned),
             })
         })
         .collect();
@@ -91,6 +100,7 @@ pub fn detect_available_agents(
             existing.binary = custom.binary.clone();
             existing.launch = custom.launch.clone();
             existing.prompt_flag = custom.prompt_flag.clone();
+            existing.bypass_flag = custom.bypass_flag.clone();
         } else {
             agents.push(AgentDefinition {
                 id: custom.id.clone(),
@@ -98,6 +108,7 @@ pub fn detect_available_agents(
                 binary: custom.binary.clone(),
                 launch: custom.launch.clone(),
                 prompt_flag: custom.prompt_flag.clone(),
+                bypass_flag: custom.bypass_flag.clone(),
             });
         }
     }
@@ -122,6 +133,7 @@ pub fn classify_agent_from_session(
                 binary: found.binary.to_owned(),
                 launch: found.launch.to_owned(),
                 prompt_flag: found.prompt_flag.map(ToOwned::to_owned),
+                bypass_flag: found.bypass_flag.map(ToOwned::to_owned),
             });
         }
     }
@@ -145,19 +157,34 @@ pub fn classify_agent_from_session(
             binary: a.binary.to_owned(),
             launch: a.launch.to_owned(),
             prompt_flag: a.prompt_flag.map(ToOwned::to_owned),
+            bypass_flag: a.bypass_flag.map(ToOwned::to_owned),
         })
 }
 
 /// Build the shell command used to launch an agent, injecting a title
 /// instruction via the agent's system-prompt flag when available.
 /// When `title_injection_enabled` is false, the prompt flag is not used.
-pub fn build_launch_command(agent: &AgentDefinition, title_injection_enabled: bool) -> String {
-    match &agent.prompt_flag {
-        Some(flag) if title_injection_enabled => {
-            format!("{} {} \"{}\"", agent.launch, flag, TITLE_INSTRUCTION)
+/// When `bypass_enabled` is true, the agent's bypass flag is appended.
+pub fn build_launch_command(
+    agent: &AgentDefinition,
+    title_injection_enabled: bool,
+    bypass_enabled: bool,
+) -> String {
+    let mut cmd = agent.launch.clone();
+
+    if let Some(flag) = &agent.prompt_flag {
+        if title_injection_enabled {
+            cmd = format!("{} {} \"{}\"", cmd, flag, TITLE_INSTRUCTION);
         }
-        _ => agent.launch.clone(),
     }
+
+    if bypass_enabled {
+        if let Some(flag) = &agent.bypass_flag {
+            cmd = format!("{} {}", cmd, flag);
+        }
+    }
+
+    cmd
 }
 
 /// Returns true if this agent needs a send-keys title injection (i.e. it has
@@ -452,12 +479,56 @@ mod tests {
             binary: "codex".to_owned(),
             launch: "codex".to_owned(),
             prompt_flag: None,
+            bypass_flag: Some("--full-auto".to_owned()),
         }];
 
         let found = classify_agent_from_session("freeform", "codex", &available)
             .expect("codex command should be classified");
 
         assert_eq!(found.id, "codex");
+    }
+
+    #[test]
+    fn build_launch_command_appends_bypass_flag() {
+        let agent = AgentDefinition {
+            id: "claude".to_owned(),
+            label: "Claude Code".to_owned(),
+            binary: "claude".to_owned(),
+            launch: "claude".to_owned(),
+            prompt_flag: Some("--append-system-prompt".to_owned()),
+            bypass_flag: Some("--dangerously-skip-permissions".to_owned()),
+        };
+
+        // bypass enabled, title enabled
+        let cmd = build_launch_command(&agent, true, true);
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+        assert!(cmd.contains("--append-system-prompt"));
+
+        // bypass disabled
+        let cmd = build_launch_command(&agent, true, false);
+        assert!(!cmd.contains("--dangerously-skip-permissions"));
+
+        // bypass enabled but agent has no flag
+        let agent_no_bypass = AgentDefinition {
+            bypass_flag: None,
+            ..agent.clone()
+        };
+        let cmd = build_launch_command(&agent_no_bypass, false, true);
+        assert_eq!(cmd, "claude");
+    }
+
+    #[test]
+    fn build_launch_command_bypass_without_title() {
+        let agent = AgentDefinition {
+            id: "codex".to_owned(),
+            label: "Codex".to_owned(),
+            binary: "codex".to_owned(),
+            launch: "codex".to_owned(),
+            prompt_flag: None,
+            bypass_flag: Some("--full-auto".to_owned()),
+        };
+        let cmd = build_launch_command(&agent, false, true);
+        assert_eq!(cmd, "codex --full-auto");
     }
 
 }
