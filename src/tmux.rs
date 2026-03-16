@@ -105,6 +105,15 @@ pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Res
         return Err(anyhow!("tmux new-session exited with status {status}"));
     }
 
+    // Enable mouse mode so scrolling works inside the session.
+    let _ = Command::new("tmux")
+        .arg("set-option")
+        .arg("-t")
+        .arg(name)
+        .arg("mouse")
+        .arg("on")
+        .status();
+
     // Step 2: Send the command as keystrokes into the session's shell.
     // This way the shell runs the command in its fully initialized environment,
     // and if the agent exits, the shell stays alive so the user can see errors.
@@ -210,6 +219,15 @@ pub fn create_split_session(name: &str, targets: &[String]) -> Result<()> {
     if !status.success() {
         return Err(anyhow!("tmux new-session for split exited with {status}"));
     }
+
+    // Enable mouse mode so scrolling works inside the session.
+    let _ = Command::new("tmux")
+        .arg("set-option")
+        .arg("-t")
+        .arg(name)
+        .arg("mouse")
+        .arg("on")
+        .status();
 
     // Send the nested-attach command into the first pane.
     let target0 = format!("{name}:");
