@@ -1348,7 +1348,7 @@ fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
                         .and_then(|p| p.to_str().map(|s| s.to_owned()))
                 })
                 .unwrap_or_else(|| "/".to_owned());
-            match Browser::new(std::path::PathBuf::from(&start_dir)) {
+            match Browser::new_simple(std::path::PathBuf::from(&start_dir)) {
                 Ok(browser) => {
                     app.startup_cmds_adding = Some(StartupCmdAddState {
                         step: StartupCmdAddStep::BrowsePath,
@@ -1425,13 +1425,6 @@ fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
                 }
 
                 for (i, entry) in entries.iter().enumerate().skip(start).take(end - start) {
-                    // Skip create dir and clone entries — not relevant here
-                    if matches!(
-                        entry.kind,
-                        EntryKind::CreateDirectory | EntryKind::CloneFromUrl
-                    ) {
-                        continue;
-                    }
                     let icon = match entry.kind {
                         EntryKind::SelectCurrent => "\u{2192}",
                         EntryKind::TypePath => "/",

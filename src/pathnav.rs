@@ -26,6 +26,8 @@ pub struct Browser {
     cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
+    /// When true, only show Select/TypePath/Parent/Directory entries (no Create/Clone).
+    simple: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +41,20 @@ pub enum ActivateResult {
 
 impl Browser {
     pub fn new(start: PathBuf) -> Result<Self> {
+        Self::with_mode(start, false)
+    }
+
+    /// Create a browser in simple mode (no "Create directory" / "Clone from URL" entries).
+    pub fn new_simple(start: PathBuf) -> Result<Self> {
+        Self::with_mode(start, true)
+    }
+
+    fn with_mode(start: PathBuf, simple: bool) -> Result<Self> {
         let mut browser = Self {
             cwd: start,
             entries: Vec::new(),
             selected: 0,
+            simple,
         };
         browser.refresh()?;
         Ok(browser)
@@ -149,16 +161,18 @@ impl Browser {
             label: format!("Use {}", self.cwd.display()),
             path: self.cwd.clone(),
         });
-        entries.push(Entry {
-            kind: EntryKind::CreateDirectory,
-            label: "Create directory here...".to_owned(),
-            path: self.cwd.clone(),
-        });
-        entries.push(Entry {
-            kind: EntryKind::CloneFromUrl,
-            label: "Clone from URL...".to_owned(),
-            path: self.cwd.clone(),
-        });
+        if !self.simple {
+            entries.push(Entry {
+                kind: EntryKind::CreateDirectory,
+                label: "Create directory here...".to_owned(),
+                path: self.cwd.clone(),
+            });
+            entries.push(Entry {
+                kind: EntryKind::CloneFromUrl,
+                label: "Clone from URL...".to_owned(),
+                path: self.cwd.clone(),
+            });
+        }
         entries.push(Entry {
             kind: EntryKind::TypePath,
             label: "Type path directly...".to_owned(),
