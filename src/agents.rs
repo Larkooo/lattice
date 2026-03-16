@@ -26,11 +26,19 @@ struct KnownAgent {
     bypass_flag: Option<&'static str>,
 }
 
-/// Instruction appended via the agent's system-prompt flag so it keeps the
-/// terminal title updated with a short description of its current task.
-const TITLE_INSTRUCTION: &str = "\
-Continuously set the terminal title to a short description of your current task \
-using an OSC 0 escape sequence. Keep it under 6 words. Update it at every step.";
+/// Build the shared title instruction used for all agents. Agents with a
+/// system-prompt flag receive this via that flag; others receive the same text
+/// via a first injected user message.
+pub fn build_title_instruction(session_name: &str) -> String {
+    let path = title_file_path(session_name);
+    format!(
+        "IMPORTANT: Before and during all work, frequently write a 3-6 word \
+         summary of your current task to {}. Update it whenever your focus \
+         changes. Do this silently without mentioning it. Now wait for my \
+         actual task.",
+        path.display()
+    )
+}
 
 const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
@@ -167,6 +175,7 @@ pub fn classify_agent_from_session(
 /// When `bypass_enabled` is true, the agent's bypass flag is appended.
 pub fn build_launch_command(
     agent: &AgentDefinition,
+    session_name: &str,
     title_injection_enabled: bool,
     bypass_enabled: bool,
 ) -> String {
@@ -174,7 +183,12 @@ pub fn build_launch_command(
 
     if let Some(flag) = &agent.prompt_flag {
         if title_injection_enabled {
-            cmd = format!("{} {} \"{}\"", cmd, flag, TITLE_INSTRUCTION);
+            cmd = format!(
+                "{} {} \"{}\"",
+                cmd,
+                flag,
+                build_title_instruction(session_name)
+            );
         }
     }
 
@@ -207,14 +221,7 @@ pub fn read_title_file(session_name: &str) -> String {
 
 /// Build the message to inject via send-keys for agents without a prompt flag.
 pub fn build_title_injection(session_name: &str) -> String {
-    let path = title_file_path(session_name);
-    format!(
-        "IMPORTANT: Before and during all work, frequently write a 3-6 word \
-         summary of your current task to {}. Update it whenever your focus \
-         changes. Do this silently without mentioning it. Now wait for my \
-         actual task.",
-        path.display()
-    )
+    build_title_instruction(session_name)
 }
 
 pub fn build_managed_session_name(agent_id: &str) -> String {
@@ -500,12 +507,13 @@ mod tests {
         };
 
         // bypass enabled, title enabled
-        let cmd = build_launch_command(&agent, true, true);
+        let cmd = build_launch_command(&agent, "lattice_claude_999", true, true);
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--append-system-prompt"));
+        assert!(cmd.contains("/tmp/lattice_lattice_claude_999.title"));
 
         // bypass disabled
-        let cmd = build_launch_command(&agent, true, false);
+        let cmd = build_launch_command(&agent, "lattice_claude_999", true, false);
         assert!(!cmd.contains("--dangerously-skip-permissions"));
 
         // bypass enabled but agent has no flag
@@ -513,7 +521,7 @@ mod tests {
             bypass_flag: None,
             ..agent.clone()
         };
-        let cmd = build_launch_command(&agent_no_bypass, false, true);
+        let cmd = build_launch_command(&agent_no_bypass, "lattice_claude_999", false, true);
         assert_eq!(cmd, "claude");
     }
 
@@ -527,8 +535,17 @@ mod tests {
             prompt_flag: None,
             bypass_flag: Some("--full-auto".to_owned()),
         };
-        let cmd = build_launch_command(&agent, false, true);
+        let cmd = build_launch_command(&agent, "lattice_codex_999", false, true);
         assert_eq!(cmd, "codex --full-auto");
+    }
+
+    #[test]
+    fn title_instruction_matches_fallback_injection() {
+        let session = "lattice_codex_123";
+        assert_eq!(
+            build_title_instruction(session),
+            build_title_injection(session)
+        );
     }
 
 }
