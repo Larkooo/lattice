@@ -23,6 +23,8 @@ struct ConfigFile {
     theme: Option<ThemeConfigFile>,
     #[serde(default)]
     agents: Vec<CustomAgentConfig>,
+    #[serde(default)]
+    startup_commands: Vec<StartupCommandsConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -53,6 +55,12 @@ pub struct CustomAgentConfig {
     pub binary: String,
     pub launch: String,
     pub prompt_flag: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StartupCommandsConfig {
+    pub path: String,
+    pub commands: Vec<String>,
 }
 
 // ── Resolved config the app uses ────────────────────────────────────────────
@@ -92,6 +100,7 @@ pub struct AppConfig {
     pub notifications: NotificationsConfig,
     pub theme: ThemeConfig,
     pub custom_agents: Vec<CustomAgentConfig>,
+    pub startup_commands: Vec<StartupCommandsConfig>,
 }
 
 impl Default for AppConfig {
@@ -109,6 +118,7 @@ impl Default for AppConfig {
             },
             theme: ThemeConfig::default(),
             custom_agents: Vec::new(),
+            startup_commands: Vec::new(),
         }
     }
 }
@@ -181,6 +191,7 @@ pub fn load_config() -> AppConfig {
     }
 
     config.custom_agents = file.agents;
+    config.startup_commands = file.startup_commands;
     config
 }
 
@@ -210,6 +221,8 @@ struct ConfigFileSave {
     theme: ThemeConfigSave,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     agents: Vec<CustomAgentConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    startup_commands: Vec<StartupCommandsConfig>,
 }
 
 #[derive(Serialize)]
@@ -282,6 +295,7 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
             green: config.theme.green.map(rgb_to_hex),
         },
         agents: config.custom_agents.clone(),
+        startup_commands: config.startup_commands.clone(),
     };
 
     let content = toml::to_string_pretty(&save).map_err(|e| format!("serialize: {e}"))?;
@@ -293,6 +307,27 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| format!("write: {e}"))?;
 
     Ok(())
+}
+
+/// Return startup commands that match the given working directory.
+/// A path matches if the working directory equals or is a subdirectory of the
+/// configured path (after expanding `~`).
+pub fn get_startup_commands(config: &AppConfig, working_dir: &str) -> Vec<String> {
+    let working = std::path::Path::new(working_dir);
+    let home = env::var("HOME").unwrap_or_default();
+
+    for entry in &config.startup_commands {
+        let expanded = if entry.path.starts_with('~') {
+            entry.path.replacen('~', &home, 1)
+        } else {
+            entry.path.clone()
+        };
+        let configured = std::path::Path::new(&expanded);
+        if working.starts_with(configured) {
+            return entry.commands.clone();
+        }
+    }
+    Vec::new()
 }
 
 pub fn apply_cli_overrides(config: &mut AppConfig, refresh_seconds: Option<u64>) {

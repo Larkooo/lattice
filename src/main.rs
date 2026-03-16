@@ -402,7 +402,17 @@ impl App {
 
         let launch_cmd = agents::build_launch_command(&agent, title_enabled);
 
-        match tmux::create_session(&session_name, &final_dir, &launch_cmd) {
+        // Prepend any configured startup commands for this directory.
+        let startup_cmds = config::get_startup_commands(&self.config, &final_dir);
+        let full_cmd = if startup_cmds.is_empty() {
+            launch_cmd.clone()
+        } else {
+            let mut parts = startup_cmds;
+            parts.push(launch_cmd.clone());
+            parts.join(" && ")
+        };
+
+        match tmux::create_session(&session_name, &final_dir, &full_cmd) {
             Ok(()) => {
                 // For agents without a system-prompt flag, inject a first
                 // message asking them to write task titles to a temp file.
