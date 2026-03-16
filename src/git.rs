@@ -179,7 +179,7 @@ fn install_coauthor_hook(working_dir: &Path, add_lattice: bool) -> Result<()> {
     let marker = "# lattice:coauthor";
 
     let lattice_line = if add_lattice {
-        "printf '\\nCo-Authored-By: Lattice\\n' >> \"$1\"\n"
+        "printf '\\nCo-Authored-By: Lattice <lattice@users.noreply.github.com>\\n' >> \"$1\"\n"
     } else {
         ""
     };
