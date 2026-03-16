@@ -442,7 +442,8 @@ impl App {
         let title_enabled = self.config.title_injection_enabled;
         let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
 
-        let launch_cmd = agents::build_launch_command(&agent, title_enabled, bypass_enabled);
+        let launch_cmd =
+            agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled);
 
         // Prepend any configured startup commands for this directory.
         let startup_cmds = config::get_startup_commands(&self.config, &final_dir);
