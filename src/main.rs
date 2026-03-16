@@ -138,6 +138,8 @@ struct App {
     startup_cmds_open: bool,
     startup_cmds_selected: usize,
     startup_cmds_adding: Option<StartupCmdAddState>,
+    permissions_open: bool,
+    permissions_selected: usize,
     split: Option<SplitState>,
 }
 
@@ -181,6 +183,8 @@ impl App {
             startup_cmds_open: false,
             startup_cmds_selected: 0,
             startup_cmds_adding: None,
+            permissions_open: false,
+            permissions_selected: 0,
             split: None,
         }
     }
@@ -419,8 +423,9 @@ impl App {
 
         let session_name = agents::build_managed_session_name(&agent.id);
         let title_enabled = self.config.title_injection_enabled;
+        let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
 
-        let launch_cmd = agents::build_launch_command(&agent, title_enabled);
+        let launch_cmd = agents::build_launch_command(&agent, title_enabled, bypass_enabled);
 
         // Prepend any configured startup commands for this directory.
         let startup_cmds = config::get_startup_commands(&self.config, &final_dir);
@@ -643,6 +648,8 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                         handle_modal_key(app, key.code);
                     } else if app.startup_cmds_open {
                         handle_startup_cmds_key(app, key.code);
+                    } else if app.permissions_open {
+                        handle_permissions_key(app, key.code);
                     } else if app.settings_open {
                         handle_settings_key(app, key.code);
                     } else {
@@ -981,7 +988,7 @@ fn handle_main_key(
     Ok(())
 }
 
-const SETTINGS_COUNT: usize = 9;
+const SETTINGS_COUNT: usize = 10;
 
 fn setting_label(index: usize) -> &'static str {
     match index {
@@ -994,6 +1001,7 @@ fn setting_label(index: usize) -> &'static str {
         6 => "Sound method",
         7 => "Sound command",
         8 => "Startup commands",
+        9 => "Agent permissions",
         _ => "",
     }
 }
@@ -1017,6 +1025,14 @@ fn setting_value(config: &config::AppConfig, index: usize) -> String {
                 "none configured".to_owned()
             } else {
                 format!("{n} rule{}", if n == 1 { "" } else { "s" })
+            }
+        }
+        9 => {
+            let n = config.permissions_bypass.values().filter(|&&v| v).count();
+            if n == 0 {
+                "all restricted".to_owned()
+            } else {
+                format!("{n} bypassed")
             }
         }
         _ => String::new(),
@@ -1123,6 +1139,10 @@ fn handle_settings_key(app: &mut App, code: KeyCode) {
                 app.startup_cmds_open = true;
                 app.startup_cmds_selected = 0;
                 app.startup_cmds_adding = None;
+            } else if idx == 9 {
+                // Open agent permissions sub-view
+                app.permissions_open = true;
+                app.permissions_selected = 0;
             } else if setting_is_bool(idx) {
                 apply_setting(app, idx, "");
                 match config::save_config(&app.config) {
@@ -1240,6 +1260,134 @@ fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
         }
         _ => {}
     }
+}
+
+fn handle_permissions_key(app: &mut App, code: KeyCode) {
+    let count = app.available_agents.len();
+
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.permissions_open = false;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if count > 0 {
+                app.permissions_selected = (app.permissions_selected + 1) % count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if count > 0 {
+                if app.permissions_selected == 0 {
+                    app.permissions_selected = count - 1;
+                } else {
+                    app.permissions_selected -= 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(agent) = app.available_agents.get(app.permissions_selected) {
+                if agent.bypass_flag.is_some() {
+                    let current = config::is_bypass_enabled(&app.config, &agent.id);
+                    app.config
+                        .permissions_bypass
+                        .insert(agent.id.clone(), !current);
+                    match config::save_config(&app.config) {
+                        Ok(()) => app.status_line = "Permissions saved".to_owned(),
+                        Err(e) => app.status_line = format!("Save failed: {e}"),
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn draw_permissions_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let t = app.theme;
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "agent permissions",
+            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "bypass permission prompts when launching agents",
+            Style::default().fg(t.muted),
+        )),
+        Line::from(""),
+    ];
+
+    if !app.config.git_worktrees {
+        lines.push(Line::from(Span::styled(
+            "! git worktrees are off — bypass is safer with isolated branches",
+            Style::default().fg(t.yellow),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    if app.available_agents.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no agents detected",
+            Style::default().fg(t.muted),
+        )));
+    } else {
+        for (i, agent) in app.available_agents.iter().enumerate() {
+            let selected = i == app.permissions_selected;
+            let bypassed = config::is_bypass_enabled(&app.config, &agent.id);
+            let has_flag = agent.bypass_flag.is_some();
+
+            let label = format!("{:<16}", agent.label);
+            let status = if !has_flag {
+                "no bypass flag"
+            } else if bypassed {
+                "bypass ON"
+            } else {
+                "restricted"
+            };
+
+            let row_style = if selected {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.highlight_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            };
+
+            let status_style = if selected {
+                row_style
+            } else if !has_flag {
+                Style::default().fg(t.muted)
+            } else if bypassed {
+                Style::default().fg(t.yellow)
+            } else {
+                Style::default().fg(t.green)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {label}"), row_style),
+                Span::styled(status.to_owned(), status_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(t.muted);
+    lines.push(Line::from(vec![
+        Span::styled("\u{2191}/\u{2193}", key_style),
+        Span::styled(" navigate   ", desc_style),
+        Span::styled("enter", key_style),
+        Span::styled(" toggle   ", desc_style),
+        Span::styled("esc", key_style),
+        Span::styled(" back", desc_style),
+    ]));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().fg(t.text).bg(t.bg))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -1583,6 +1731,8 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
 
     if app.startup_cmds_open {
         draw_startup_cmds_view(frame, sections[2], app);
+    } else if app.permissions_open {
+        draw_permissions_view(frame, sections[2], app);
     } else if app.settings_open {
         draw_settings_view(frame, sections[2], app);
     } else if app.selected_tab == 0 {
