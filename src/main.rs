@@ -135,7 +135,24 @@ struct App {
     settings_open: bool,
     settings_selected: usize,
     settings_editing: Option<String>,
+    startup_cmds_open: bool,
+    startup_cmds_selected: usize,
+    startup_cmds_adding: Option<StartupCmdAddState>,
     split: Option<SplitState>,
+}
+
+#[derive(Debug, Clone)]
+enum StartupCmdAddStep {
+    Path,
+    Command,
+}
+
+#[derive(Debug, Clone)]
+struct StartupCmdAddState {
+    step: StartupCmdAddStep,
+    path: String,
+    commands: Vec<String>,
+    current_input: String,
 }
 
 impl App {
@@ -161,6 +178,9 @@ impl App {
             settings_open: false,
             settings_selected: 0,
             settings_editing: None,
+            startup_cmds_open: false,
+            startup_cmds_selected: 0,
+            startup_cmds_adding: None,
             split: None,
         }
     }
@@ -621,6 +641,8 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                         handle_warning_key(app, key.code);
                     } else if app.modal.is_some() {
                         handle_modal_key(app, key.code);
+                    } else if app.startup_cmds_open {
+                        handle_startup_cmds_key(app, key.code);
                     } else if app.settings_open {
                         handle_settings_key(app, key.code);
                     } else {
@@ -959,7 +981,7 @@ fn handle_main_key(
     Ok(())
 }
 
-const SETTINGS_COUNT: usize = 8;
+const SETTINGS_COUNT: usize = 9;
 
 fn setting_label(index: usize) -> &'static str {
     match index {
@@ -971,6 +993,7 @@ fn setting_label(index: usize) -> &'static str {
         5 => "Sound on completion",
         6 => "Sound method",
         7 => "Sound command",
+        8 => "Startup commands",
         _ => "",
     }
 }
@@ -988,6 +1011,14 @@ fn setting_value(config: &config::AppConfig, index: usize) -> String {
             config::SoundMethod::Command => "command".to_owned(),
         },
         7 => config.notifications.sound_command.clone(),
+        8 => {
+            let n = config.startup_commands.len();
+            if n == 0 {
+                "none configured".to_owned()
+            } else {
+                format!("{n} rule{}", if n == 1 { "" } else { "s" })
+            }
+        }
         _ => String::new(),
     }
 }
@@ -1087,7 +1118,12 @@ fn handle_settings_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Enter => {
             let idx = app.settings_selected;
-            if setting_is_bool(idx) {
+            if idx == 8 {
+                // Open startup commands sub-view
+                app.startup_cmds_open = true;
+                app.startup_cmds_selected = 0;
+                app.startup_cmds_adding = None;
+            } else if setting_is_bool(idx) {
                 apply_setting(app, idx, "");
                 match config::save_config(&app.config) {
                     Ok(()) => app.status_line = "Settings saved".to_owned(),
@@ -1105,6 +1141,222 @@ fn handle_settings_key(app: &mut App, code: KeyCode) {
         }
         _ => {}
     }
+}
+
+fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
+    // If we're in the add flow, handle that first.
+    if let Some(ref mut state) = app.startup_cmds_adding {
+        match code {
+            KeyCode::Esc => {
+                app.startup_cmds_adding = None;
+            }
+            KeyCode::Backspace => {
+                state.current_input.pop();
+            }
+            KeyCode::Char(c) => {
+                state.current_input.push(c);
+            }
+            KeyCode::Enter => match state.step {
+                StartupCmdAddStep::Path => {
+                    if state.current_input.trim().is_empty() {
+                        app.startup_cmds_adding = None;
+                        return;
+                    }
+                    state.path = state.current_input.trim().to_owned();
+                    state.current_input.clear();
+                    state.step = StartupCmdAddStep::Command;
+                }
+                StartupCmdAddStep::Command => {
+                    let input = state.current_input.trim().to_owned();
+                    if input.is_empty() {
+                        // Empty input = done adding commands
+                        if state.commands.is_empty() {
+                            // No commands added, cancel
+                            app.startup_cmds_adding = None;
+                            return;
+                        }
+                        let entry = config::StartupCommandsConfig {
+                            path: state.path.clone(),
+                            commands: state.commands.clone(),
+                        };
+                        app.config.startup_commands.push(entry);
+                        app.startup_cmds_adding = None;
+                        match config::save_config(&app.config) {
+                            Ok(()) => app.status_line = "Startup command rule added".to_owned(),
+                            Err(e) => app.status_line = format!("Save failed: {e}"),
+                        }
+                    } else {
+                        state.commands.push(input);
+                        state.current_input.clear();
+                    }
+                }
+            },
+            _ => {}
+        }
+        return;
+    }
+
+    let count = app.config.startup_commands.len();
+
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.startup_cmds_open = false;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if count > 0 {
+                app.startup_cmds_selected = (app.startup_cmds_selected + 1) % count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if count > 0 {
+                if app.startup_cmds_selected == 0 {
+                    app.startup_cmds_selected = count - 1;
+                } else {
+                    app.startup_cmds_selected -= 1;
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            app.startup_cmds_adding = Some(StartupCmdAddState {
+                step: StartupCmdAddStep::Path,
+                path: String::new(),
+                commands: Vec::new(),
+                current_input: String::new(),
+            });
+        }
+        KeyCode::Char('x') => {
+            if count > 0 && app.startup_cmds_selected < count {
+                app.config.startup_commands.remove(app.startup_cmds_selected);
+                if app.startup_cmds_selected >= app.config.startup_commands.len()
+                    && app.startup_cmds_selected > 0
+                {
+                    app.startup_cmds_selected -= 1;
+                }
+                match config::save_config(&app.config) {
+                    Ok(()) => app.status_line = "Startup command rule removed".to_owned(),
+                    Err(e) => app.status_line = format!("Save failed: {e}"),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let t = app.theme;
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "startup commands",
+            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "commands to run before the agent launches in matching directories",
+            Style::default().fg(t.muted),
+        )),
+        Line::from(""),
+    ];
+
+    if let Some(ref state) = app.startup_cmds_adding {
+        match state.step {
+            StartupCmdAddStep::Path => {
+                lines.push(Line::from(Span::styled(
+                    "enter directory path:",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}_", state.current_input),
+                    Style::default().fg(t.text),
+                )));
+            }
+            StartupCmdAddStep::Command => {
+                lines.push(Line::from(Span::styled(
+                    format!("path: {}", state.path),
+                    Style::default().fg(t.muted),
+                )));
+                for cmd in &state.commands {
+                    lines.push(Line::from(Span::styled(
+                        format!("  + {cmd}"),
+                        Style::default().fg(t.green),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    "enter command (empty to finish):",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}_", state.current_input),
+                    Style::default().fg(t.text),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("enter", key_style),
+            Span::styled(" confirm   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" cancel", desc_style),
+        ]));
+    } else if app.config.startup_commands.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no startup command rules configured",
+            Style::default().fg(t.muted),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "press 'a' to add a rule",
+            Style::default().fg(t.muted),
+        )));
+    } else {
+        for (i, entry) in app.config.startup_commands.iter().enumerate() {
+            let selected = i == app.startup_cmds_selected;
+            let path_style = if selected {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.highlight_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.accent)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {}", entry.path),
+                path_style,
+            )));
+            for cmd in &entry.commands {
+                let cmd_style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg)
+                } else {
+                    Style::default().fg(t.muted)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("    $ {cmd}"),
+                    cmd_style,
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("\u{2191}/\u{2193}", key_style),
+            Span::styled(" navigate   ", desc_style),
+            Span::styled("a", key_style),
+            Span::styled(" add   ", desc_style),
+            Span::styled("x", key_style),
+            Span::styled(" remove   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" back", desc_style),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().fg(t.text).bg(t.bg))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_settings_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -1168,7 +1420,7 @@ fn draw_settings_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Custom [[agents]] entries are not editable here — edit config.toml directly.",
+        "Custom [[agents]] and theme entries are not editable here — edit config.toml directly.",
         Style::default().fg(t.muted),
     )));
 
@@ -1329,7 +1581,9 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
 
     draw_header(frame, sections[0], app);
 
-    if app.settings_open {
+    if app.startup_cmds_open {
+        draw_startup_cmds_view(frame, sections[2], app);
+    } else if app.settings_open {
         draw_settings_view(frame, sections[2], app);
     } else if app.selected_tab == 0 {
         draw_dashboard(frame, sections[2], app);
