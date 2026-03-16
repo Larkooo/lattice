@@ -508,6 +508,9 @@ impl App {
 
         match tmux::kill_session(&instance.session.name) {
             Ok(()) => {
+                // Clean up title file
+                agents::remove_title_file(&instance.session.name);
+
                 // Clean up worktree if applicable
                 if let Some(wt) = worktree_path {
                     match git::remove_worktree(&wt) {

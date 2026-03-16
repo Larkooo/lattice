@@ -219,6 +219,11 @@ pub fn read_title_file(session_name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Remove the title file for a session, ignoring errors if it doesn't exist.
+pub fn remove_title_file(session_name: &str) {
+    let _ = fs::remove_file(title_file_path(session_name));
+}
+
 /// Build the message to inject via send-keys for agents without a prompt flag.
 pub fn build_title_injection(session_name: &str) -> String {
     build_title_instruction(session_name)
