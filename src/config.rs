@@ -19,6 +19,8 @@ struct ConfigFile {
     title_injection_enabled: Option<bool>,
     title_injection_delay: Option<u32>,
     git_worktrees: Option<bool>,
+    strip_coauthor: Option<bool>,
+    lattice_coauthor: Option<bool>,
     notifications: Option<NotificationsConfigFile>,
     theme: Option<ThemeConfigFile>,
     #[serde(default)]
@@ -100,6 +102,8 @@ pub struct AppConfig {
     pub title_injection_enabled: bool,
     pub title_injection_delay: u32,
     pub git_worktrees: bool,
+    pub strip_coauthor: bool,
+    pub lattice_coauthor: bool,
     pub notifications: NotificationsConfig,
     pub theme: ThemeConfig,
     pub custom_agents: Vec<CustomAgentConfig>,
@@ -115,6 +119,8 @@ impl Default for AppConfig {
             title_injection_enabled: true,
             title_injection_delay: 5,
             git_worktrees: false,
+            strip_coauthor: false,
+            lattice_coauthor: false,
             notifications: NotificationsConfig {
                 sound_on_completion: true,
                 sound_method: SoundMethod::Command,
@@ -167,6 +173,12 @@ pub fn load_config() -> AppConfig {
     }
     if let Some(v) = file.git_worktrees {
         config.git_worktrees = v;
+    }
+    if let Some(v) = file.strip_coauthor {
+        config.strip_coauthor = v;
+    }
+    if let Some(v) = file.lattice_coauthor {
+        config.lattice_coauthor = v;
     }
 
     if let Some(notif) = file.notifications {
@@ -222,6 +234,8 @@ struct ConfigFileSave {
     title_injection_enabled: bool,
     title_injection_delay: u32,
     git_worktrees: bool,
+    strip_coauthor: bool,
+    lattice_coauthor: bool,
     notifications: NotificationsConfigFileSave,
     #[serde(skip_serializing_if = "ThemeConfigSave::is_empty")]
     theme: ThemeConfigSave,
@@ -284,6 +298,8 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
         title_injection_enabled: config.title_injection_enabled,
         title_injection_delay: config.title_injection_delay,
         git_worktrees: config.git_worktrees,
+        strip_coauthor: config.strip_coauthor,
+        lattice_coauthor: config.lattice_coauthor,
         notifications: NotificationsConfigFileSave {
             sound_on_completion: config.notifications.sound_on_completion,
             sound_method: match config.notifications.sound_method {

@@ -426,6 +426,18 @@ impl App {
                 working_dir.clone()
             };
 
+        // Install co-author commit-msg hook if either setting is enabled
+        // Lattice co-author takes priority (replaces agent co-author with Lattice)
+        if self.config.lattice_coauthor {
+            if let Err(err) = git::install_lattice_coauthor_hook(std::path::Path::new(&final_dir)) {
+                self.status_line = format!("Co-author hook failed: {err}");
+            }
+        } else if self.config.strip_coauthor {
+            if let Err(err) = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir)) {
+                self.status_line = format!("Co-author hook failed: {err}");
+            }
+        }
+
         let session_name = agents::build_managed_session_name(&agent.id);
         let title_enabled = self.config.title_injection_enabled;
         let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
@@ -1036,7 +1048,7 @@ fn handle_main_key(
     Ok(())
 }
 
-const SETTINGS_COUNT: usize = 10;
+const SETTINGS_COUNT: usize = 12;
 
 fn setting_label(index: usize) -> &'static str {
     match index {
@@ -1045,11 +1057,13 @@ fn setting_label(index: usize) -> &'static str {
         2 => "Title injection",
         3 => "Title injection delay",
         4 => "Git worktrees",
-        5 => "Sound on completion",
-        6 => "Sound method",
-        7 => "Sound command",
-        8 => "Startup commands",
-        9 => "Agent permissions",
+        5 => "Strip co-author",
+        6 => "Lattice co-author",
+        7 => "Sound on completion",
+        8 => "Sound method",
+        9 => "Sound command",
+        10 => "Startup commands",
+        11 => "Agent permissions",
         _ => "",
     }
 }
@@ -1061,13 +1075,15 @@ fn setting_value(config: &config::AppConfig, index: usize) -> String {
         2 => if config.title_injection_enabled { "on".to_owned() } else { "off".to_owned() },
         3 => format!("{}", config.title_injection_delay),
         4 => if config.git_worktrees { "on".to_owned() } else { "off".to_owned() },
-        5 => if config.notifications.sound_on_completion { "on".to_owned() } else { "off".to_owned() },
-        6 => match config.notifications.sound_method {
+        5 => if config.strip_coauthor { "on".to_owned() } else { "off".to_owned() },
+        6 => if config.lattice_coauthor { "on".to_owned() } else { "off".to_owned() },
+        7 => if config.notifications.sound_on_completion { "on".to_owned() } else { "off".to_owned() },
+        8 => match config.notifications.sound_method {
             config::SoundMethod::Bell => "bell".to_owned(),
             config::SoundMethod::Command => "command".to_owned(),
         },
-        7 => config.notifications.sound_command.clone(),
-        8 => {
+        9 => config.notifications.sound_command.clone(),
+        10 => {
             let n = config.startup_commands.len();
             if n == 0 {
                 "none configured".to_owned()
@@ -1075,7 +1091,7 @@ fn setting_value(config: &config::AppConfig, index: usize) -> String {
                 format!("{n} rule{}", if n == 1 { "" } else { "s" })
             }
         }
-        9 => {
+        11 => {
             let n = config.permissions_bypass.values().filter(|&&v| v).count();
             if n == 0 {
                 "all restricted".to_owned()
@@ -1088,11 +1104,11 @@ fn setting_value(config: &config::AppConfig, index: usize) -> String {
 }
 
 fn setting_is_bool(index: usize) -> bool {
-    matches!(index, 2 | 4 | 5)
+    matches!(index, 2 | 4 | 5 | 6 | 7)
 }
 
 fn setting_is_cycle(index: usize) -> bool {
-    index == 6
+    index == 8
 }
 
 fn apply_setting(app: &mut App, index: usize, value: &str) {
@@ -1123,15 +1139,21 @@ fn apply_setting(app: &mut App, index: usize, value: &str) {
             app.config.git_worktrees = !app.config.git_worktrees;
         }
         5 => {
-            app.config.notifications.sound_on_completion = !app.config.notifications.sound_on_completion;
+            app.config.strip_coauthor = !app.config.strip_coauthor;
         }
         6 => {
+            app.config.lattice_coauthor = !app.config.lattice_coauthor;
+        }
+        7 => {
+            app.config.notifications.sound_on_completion = !app.config.notifications.sound_on_completion;
+        }
+        8 => {
             app.config.notifications.sound_method = match app.config.notifications.sound_method {
                 config::SoundMethod::Bell => config::SoundMethod::Command,
                 config::SoundMethod::Command => config::SoundMethod::Bell,
             };
         }
-        7 => {
+        9 => {
             app.config.notifications.sound_command = value.to_owned();
         }
         _ => {}
@@ -1182,12 +1204,12 @@ fn handle_settings_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Enter => {
             let idx = app.settings_selected;
-            if idx == 8 {
+            if idx == 10 {
                 // Open startup commands sub-view
                 app.startup_cmds_open = true;
                 app.startup_cmds_selected = 0;
                 app.startup_cmds_adding = None;
-            } else if idx == 9 {
+            } else if idx == 11 {
                 // Open agent permissions sub-view
                 app.permissions_open = true;
                 app.permissions_selected = 0;
