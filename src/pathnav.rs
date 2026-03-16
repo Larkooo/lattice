@@ -9,6 +9,7 @@ pub enum EntryKind {
     SelectCurrent,
     CreateDirectory,
     CloneFromUrl,
+    TypePath,
     Parent,
     Directory,
 }
@@ -25,6 +26,8 @@ pub struct Browser {
     cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
+    /// When true, only show Select/TypePath/Parent/Directory entries (no Create/Clone).
+    simple: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,15 +35,26 @@ pub enum ActivateResult {
     Selected(PathBuf),
     StartCreateDirectory,
     StartCloneFromUrl,
+    StartTypePath,
     ChangedDirectory,
 }
 
 impl Browser {
     pub fn new(start: PathBuf) -> Result<Self> {
+        Self::with_mode(start, false)
+    }
+
+    /// Create a browser in simple mode (no "Create directory" / "Clone from URL" entries).
+    pub fn new_simple(start: PathBuf) -> Result<Self> {
+        Self::with_mode(start, true)
+    }
+
+    fn with_mode(start: PathBuf, simple: bool) -> Result<Self> {
         let mut browser = Self {
             cwd: start,
             entries: Vec::new(),
             selected: 0,
+            simple,
         };
         browser.refresh()?;
         Ok(browser)
@@ -87,12 +101,22 @@ impl Browser {
             EntryKind::SelectCurrent => Ok(ActivateResult::Selected(self.cwd.clone())),
             EntryKind::CreateDirectory => Ok(ActivateResult::StartCreateDirectory),
             EntryKind::CloneFromUrl => Ok(ActivateResult::StartCloneFromUrl),
+            EntryKind::TypePath => Ok(ActivateResult::StartTypePath),
             EntryKind::Parent | EntryKind::Directory => {
                 self.cwd = entry.path;
                 self.refresh()?;
                 Ok(ActivateResult::ChangedDirectory)
             }
         }
+    }
+
+    pub fn navigate_to(&mut self, path: &Path) -> Result<()> {
+        if !path.is_dir() {
+            return Err(anyhow::anyhow!("not a directory: {}", path.display()));
+        }
+        self.cwd = path.to_path_buf();
+        self.refresh()?;
+        Ok(())
     }
 
     pub fn create_directory(&mut self, name: &str) -> Result<PathBuf> {
@@ -137,14 +161,21 @@ impl Browser {
             label: format!("Use {}", self.cwd.display()),
             path: self.cwd.clone(),
         });
+        if !self.simple {
+            entries.push(Entry {
+                kind: EntryKind::CreateDirectory,
+                label: "Create directory here...".to_owned(),
+                path: self.cwd.clone(),
+            });
+            entries.push(Entry {
+                kind: EntryKind::CloneFromUrl,
+                label: "Clone from URL...".to_owned(),
+                path: self.cwd.clone(),
+            });
+        }
         entries.push(Entry {
-            kind: EntryKind::CreateDirectory,
-            label: "Create directory here...".to_owned(),
-            path: self.cwd.clone(),
-        });
-        entries.push(Entry {
-            kind: EntryKind::CloneFromUrl,
-            label: "Clone from URL...".to_owned(),
+            kind: EntryKind::TypePath,
+            label: "Type path directly...".to_owned(),
             path: self.cwd.clone(),
         });
 
