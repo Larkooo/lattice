@@ -142,6 +142,93 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install a `commit-msg` git hook that strips Co-Authored-By trailers.
+/// If a hook already exists, it is preserved and chained via `exec`.
+pub fn install_strip_coauthor_hook(working_dir: &Path) -> Result<()> {
+    install_coauthor_hook(working_dir, false)
+}
+
+/// Install a `commit-msg` git hook that replaces any Co-Authored-By trailers
+/// with a single Lattice co-author line.
+/// If a hook already exists, it is preserved and chained via `exec`.
+pub fn install_lattice_coauthor_hook(working_dir: &Path) -> Result<()> {
+    install_coauthor_hook(working_dir, true)
+}
+
+fn install_coauthor_hook(working_dir: &Path, add_lattice: bool) -> Result<()> {
+    // Find the git hooks directory for this working tree
+    let output = Command::new("git")
+        .args(["-C", &working_dir.to_string_lossy(), "rev-parse", "--git-path", "hooks"])
+        .output()
+        .context("failed to locate git hooks directory")?;
+
+    if !output.status.success() {
+        anyhow::bail!("not a git repository");
+    }
+
+    let hooks_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let hooks_dir = if hooks_dir.is_relative() {
+        working_dir.join(hooks_dir)
+    } else {
+        hooks_dir
+    };
+    std::fs::create_dir_all(&hooks_dir)
+        .with_context(|| format!("failed to create hooks dir: {}", hooks_dir.display()))?;
+
+    let hook_path = hooks_dir.join("commit-msg");
+    let marker = "# lattice:coauthor";
+
+    let lattice_line = if add_lattice {
+        "printf '\\nCo-Authored-By: Lattice\\n' >> \"$1\"\n"
+    } else {
+        ""
+    };
+
+    // Don't install twice
+    if hook_path.exists() {
+        let existing = std::fs::read_to_string(&hook_path).unwrap_or_default();
+        if existing.contains(marker) {
+            return Ok(());
+        }
+        // Chain existing hook: rename it and call from ours
+        let backup = hooks_dir.join("commit-msg.lattice-backup");
+        std::fs::rename(&hook_path, &backup)
+            .context("failed to back up existing commit-msg hook")?;
+
+        let script = format!(
+            "#!/bin/sh\n\
+             {marker}\n\
+             # Strip agent Co-Authored-By trailers\n\
+             sed '/^[[:space:]]*Co-[Aa]uthored-[Bb]y:/d' \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n\
+             {lattice_line}\
+             # Chain to original hook\n\
+             exec \"{}\" \"$@\"\n",
+            backup.to_string_lossy()
+        );
+        std::fs::write(&hook_path, script).context("failed to write commit-msg hook")?;
+    } else {
+        let script = format!(
+            "#!/bin/sh\n\
+             {marker}\n\
+             # Strip agent Co-Authored-By trailers\n\
+             sed '/^[[:space:]]*Co-[Aa]uthored-[Bb]y:/d' \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n\
+             {lattice_line}"
+        );
+        std::fs::write(&hook_path, script).context("failed to write commit-msg hook")?;
+    }
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&hook_path, perms)
+            .context("failed to make commit-msg hook executable")?;
+    }
+
+    Ok(())
+}
+
 /// Clone `url` into `dest_dir/<repo-name>/`. Returns the clone path.
 /// Repo name is derived from the URL (last path segment minus .git).
 pub fn clone_repo(url: &str, dest_dir: &Path) -> Result<PathBuf> {
