@@ -4,6 +4,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.md");
+const PR_PROMPT_TEMPLATE: &str = include_str!("../prompts/pr.md");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDefinition {
     pub id: String,
@@ -26,18 +29,18 @@ struct KnownAgent {
     bypass_flag: Option<&'static str>,
 }
 
-/// Build the shared title instruction used for all agents. Agents with a
+/// Build the shared system instruction used for all agents. Agents with a
 /// system-prompt flag receive this via that flag; others receive the same text
 /// via a first injected user message.
 pub fn build_title_instruction(session_name: &str) -> String {
-    let path = title_file_path(session_name);
-    format!(
-        "IMPORTANT: Before and during all work, frequently write a 3-6 word \
-         summary of your current task to {}. Update it whenever your focus \
-         changes. Do this silently without mentioning it. Now wait for my \
-         actual task.",
-        path.display()
-    )
+    SYSTEM_PROMPT_TEMPLATE
+        .replace("{title_path}", &title_file_path(session_name).display().to_string())
+        .replace("{done_path}", &done_file_path(session_name).display().to_string())
+}
+
+/// Build the prompt injected into an agent session to create a PR.
+pub fn build_pr_prompt() -> String {
+    PR_PROMPT_TEMPLATE.to_owned()
 }
 
 const KNOWN_AGENTS: &[KnownAgent] = &[
@@ -222,6 +225,21 @@ pub fn read_title_file(session_name: &str) -> String {
 /// Remove the title file for a session, ignoring errors if it doesn't exist.
 pub fn remove_title_file(session_name: &str) {
     let _ = fs::remove_file(title_file_path(session_name));
+}
+
+/// Path to the done file for a session: `/tmp/lattice_{name}.done`
+pub fn done_file_path(session_name: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/lattice_{session_name}.done"))
+}
+
+/// Returns true if the agent has signalled completion by writing its done file.
+pub fn is_done(session_name: &str) -> bool {
+    done_file_path(session_name).exists()
+}
+
+/// Remove the done file for a session, ignoring errors if it doesn't exist.
+pub fn remove_done_file(session_name: &str) {
+    let _ = fs::remove_file(done_file_path(session_name));
 }
 
 /// Build the message to inject via send-keys for agents without a prompt flag.
