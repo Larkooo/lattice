@@ -45,6 +45,8 @@ struct AgentInstance {
     managed: bool,
     title_override: String,
     completed: bool,
+    pr_opened: bool,
+    merged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -268,12 +270,16 @@ impl App {
                         let managed = agents::managed_session_agent_id(&session.name).is_some();
                         let title_override = agents::read_title_file(&session.name);
                         let completed = agents::is_done(&session.name);
+                        let pr_opened = agents::is_pr_opened(&session.name);
+                        let merged = agents::is_merged(&session.name);
                         Some(AgentInstance {
                             agent,
                             session,
                             managed,
                             title_override,
                             completed,
+                            pr_opened,
+                            merged,
                         })
                     })
                     .collect();
@@ -550,6 +556,8 @@ impl App {
                 Ok(()) => {
                     agents::remove_title_file(&session_name);
                     agents::remove_done_file(&session_name);
+                    agents::remove_pr_file(&session_name);
+                    agents::remove_merged_file(&session_name);
 
                     if let Some(wt) = worktree_path {
                         match git::remove_worktree(&wt) {
@@ -1081,9 +1089,24 @@ fn handle_main_key(
         KeyCode::Char('x') => app.kill_selected_instance(),
         KeyCode::Char('p') => {
             if let Some(instance) = app.active_instance_ref().cloned() {
-                if instance.completed {
+                if instance.merged {
+                    app.status_line = "PR already merged — press x to stop instance".to_owned();
+                } else if instance.pr_opened {
+                    match tmux::send_keys(&instance.session.name, &agents::build_merge_pr_prompt()) {
+                        Ok(()) => {
+                            agents::mark_merged(&instance.session.name);
+                            app.status_line = "Merge prompt sent — instance ready to stop (press x)".to_owned();
+                            app.refresh();
+                        }
+                        Err(err) => app.status_line = format!("Failed to send merge prompt: {err}"),
+                    }
+                } else if instance.completed {
                     match tmux::send_keys(&instance.session.name, &agents::build_pr_prompt()) {
-                        Ok(()) => app.status_line = "PR prompt sent".to_owned(),
+                        Ok(()) => {
+                            agents::mark_pr_opened(&instance.session.name);
+                            app.status_line = "PR prompt sent — press p again to merge".to_owned();
+                            app.refresh();
+                        }
                         Err(err) => app.status_line = format!("Failed to send PR prompt: {err}"),
                     }
                 } else {
@@ -2295,6 +2318,28 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(t.yellow)
                 };
                 (label, style)
+            } else if instance.merged {
+                let label = format!("\u{21B3} {}", truncate(&title, 26));
+                let style = if selected {
+                    Style::default()
+                        .fg(t.bg)
+                        .bg(t.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.accent)
+                };
+                (label, style)
+            } else if instance.pr_opened {
+                let label = format!("\u{2197} {}", truncate(&title, 26));
+                let style = if selected {
+                    Style::default()
+                        .fg(t.bg)
+                        .bg(t.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.yellow)
+                };
+                (label, style)
             } else if instance.completed {
                 let label = format!("\u{2713} {}", truncate(&title, 26));
                 let style = if selected {
@@ -2496,7 +2541,11 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         l
     } else if let Some(instance) = app.selected_instance() {
-        let (state_label, state_style) = if instance.completed {
+        let (state_label, state_style) = if instance.merged {
+            ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+        } else if instance.pr_opened {
+            ("PR opened \u{2014} press p to merge", Style::default().fg(t.yellow))
+        } else if instance.completed {
             ("completed", Style::default().fg(t.green))
         } else if instance.session.attached {
             ("attached", Style::default().fg(t.green))
@@ -2602,6 +2651,10 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let (state_label, state_style) = if is_stopping {
         ("stopping\u{2026}", Style::default().fg(t.yellow))
+    } else if instance.merged {
+        ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+    } else if instance.pr_opened {
+        ("PR opened \u{2014} press p to merge", Style::default().fg(t.yellow))
     } else if instance.completed {
         ("completed", Style::default().fg(t.green))
     } else if instance.session.attached {
