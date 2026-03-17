@@ -24,8 +24,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
+    collections::HashSet,
     env,
     io::{self, Stdout},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -120,6 +122,11 @@ impl UiTheme {
     }
 }
 
+struct StopResult {
+    session_name: String,
+    message: String,
+}
+
 struct App {
     available_agents: Vec<AgentDefinition>,
     instances: Vec<AgentInstance>,
@@ -144,6 +151,9 @@ struct App {
     permissions_open: bool,
     permissions_selected: usize,
     split: Option<SplitState>,
+    stopping_sessions: HashSet<String>,
+    stop_tx: mpsc::Sender<StopResult>,
+    stop_rx: mpsc::Receiver<StopResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +176,7 @@ impl App {
     fn new(cfg: config::AppConfig) -> Self {
         let tmux_available = tmux::is_tmux_available();
         let refresh_interval = Duration::from_secs(cfg.refresh_interval.max(1));
+        let (stop_tx, stop_rx) = mpsc::channel();
 
         Self {
             available_agents: Vec::new(),
@@ -191,6 +202,9 @@ impl App {
             permissions_open: false,
             permissions_selected: 0,
             split: None,
+            stopping_sessions: HashSet::new(),
+            stop_tx,
+            stop_rx,
         }
     }
 
@@ -503,6 +517,14 @@ impl App {
             return;
         };
 
+        let session_name = instance.session.name.clone();
+
+        // Prevent double-stop
+        if self.stopping_sessions.contains(&session_name) {
+            self.status_line = format!("{session_name} is already stopping...");
+            return;
+        }
+
         // Check if the session was running in a worktree before killing it
         let worktree_path = if self.config.git_worktrees
             && !instance.session.pane_current_path.is_empty()
@@ -517,34 +539,49 @@ impl App {
             None
         };
 
-        match tmux::kill_session(&instance.session.name) {
-            Ok(()) => {
-                // Clean up title and done files
-                agents::remove_title_file(&instance.session.name);
-                agents::remove_done_file(&instance.session.name);
+        // Mark as stopping so the UI shows an indicator
+        self.stopping_sessions.insert(session_name.clone());
+        self.status_line = format!("Stopping {session_name}...");
 
-                // Clean up worktree if applicable
-                if let Some(wt) = worktree_path {
-                    match git::remove_worktree(&wt) {
-                        Ok(()) => {
-                            self.status_line =
-                                format!("Stopped {} (worktree cleaned)", instance.session.name);
+        // Spawn a background thread to do the blocking work
+        let tx = self.stop_tx.clone();
+        std::thread::spawn(move || {
+            let message = match tmux::kill_session(&session_name) {
+                Ok(()) => {
+                    agents::remove_title_file(&session_name);
+                    agents::remove_done_file(&session_name);
+
+                    if let Some(wt) = worktree_path {
+                        match git::remove_worktree(&wt) {
+                            Ok(()) => {
+                                format!("Stopped {session_name} (worktree cleaned)")
+                            }
+                            Err(err) => {
+                                format!("Stopped {session_name} (worktree cleanup failed: {err})")
+                            }
                         }
-                        Err(err) => {
-                            self.status_line = format!(
-                                "Stopped {} (worktree cleanup failed: {err})",
-                                instance.session.name
-                            );
-                        }
+                    } else {
+                        format!("Stopped {session_name}")
                     }
-                } else {
-                    self.status_line = format!("Stopped {}", instance.session.name);
                 }
-                self.refresh();
-            }
-            Err(err) => {
-                self.status_line = format!("Failed to stop {}: {err}", instance.session.name);
-            }
+                Err(err) => {
+                    format!("Failed to stop {session_name}: {err}")
+                }
+            };
+
+            let _ = tx.send(StopResult {
+                session_name,
+                message,
+            });
+        });
+    }
+
+    fn drain_stop_results(&mut self) {
+        while let Ok(result) = self.stop_rx.try_recv() {
+            self.stopping_sessions.remove(&result.session_name);
+            self.status_line = result.message;
+            // Force a refresh so the stopped instance disappears from the list
+            self.last_refresh = Instant::now() - self.refresh_interval;
         }
     }
 
@@ -665,12 +702,23 @@ fn run(cfg: config::AppConfig) -> Result<()> {
 
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     while !app.should_quit {
+        // Check for completed background stop operations
+        app.drain_stop_results();
+
         terminal.draw(|frame| draw_ui(frame, app))?;
+
+        // Poll more frequently when sessions are being stopped so the UI
+        // updates promptly when the background work finishes.
+        let max_wait = if app.stopping_sessions.is_empty() {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_millis(100)
+        };
 
         let until_refresh = app
             .refresh_interval
             .saturating_sub(app.last_refresh.elapsed())
-            .min(Duration::from_millis(250));
+            .min(max_wait);
 
         if event::poll(until_refresh)? {
             match event::read()? {
@@ -2234,7 +2282,20 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 &instance.title_override,
             );
 
-            let (label, style) = if instance.completed {
+            let is_stopping = app.stopping_sessions.contains(&instance.session.name);
+
+            let (label, style) = if is_stopping {
+                let label = format!("\u{29D7} {} stopping\u{2026}", truncate(&title, 18));
+                let style = if selected {
+                    Style::default()
+                        .fg(t.bg)
+                        .bg(t.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.yellow)
+                };
+                (label, style)
+            } else if instance.completed {
                 let label = format!("\u{2713} {}", truncate(&title, 26));
                 let style = if selected {
                     Style::default()
@@ -2537,7 +2598,11 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         return;
     };
 
-    let (state_label, state_style) = if instance.completed {
+    let is_stopping = app.stopping_sessions.contains(&instance.session.name);
+
+    let (state_label, state_style) = if is_stopping {
+        ("stopping\u{2026}", Style::default().fg(t.yellow))
+    } else if instance.completed {
         ("completed", Style::default().fg(t.green))
     } else if instance.session.attached {
         ("attached", Style::default().fg(t.green))
