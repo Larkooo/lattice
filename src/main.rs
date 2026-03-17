@@ -48,6 +48,18 @@ struct AgentInstance {
     pr_state: Option<git::PrState>,
 }
 
+/// Returns a sort key and display label for the category an instance belongs to.
+/// Categories in ascending order: Running → Completed → PR Open → Merged.
+fn instance_category(instance: &AgentInstance) -> (u8, &'static str) {
+    match &instance.pr_state {
+        Some(git::PrState::Merged) => (3, "merged"),
+        Some(git::PrState::Open)   => (2, "pr open"),
+        Some(git::PrState::Closed) => (1, "completed"),
+        None if instance.completed => (1, "completed"),
+        _                          => (0, "running"),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SplitPane {
     session_name: String,
@@ -285,8 +297,10 @@ impl App {
                     })
                     .collect();
 
-                self.instances
-                    .sort_by(|a, b| a.session.name.cmp(&b.session.name));
+                self.instances.sort_by(|a, b| {
+                    instance_category(a).0.cmp(&instance_category(b).0)
+                        .then(a.session.name.cmp(&b.session.name))
+                });
                 self.clamp_selection();
 
                 let completed_count = self.instances.iter().filter(|i| i.completed).count();
@@ -2246,22 +2260,8 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
-    let has_managed = app.instances.iter().any(|i| i.managed);
-    let has_external = app.instances.iter().any(|i| !i.managed);
 
     let mut lines: Vec<Line> = Vec::new();
-
-    if has_managed {
-        lines.push(Line::from(Span::styled(
-            "~ managed ~",
-            Style::default().fg(t.accent),
-        )));
-    } else if !app.instances.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "~ sessions ~",
-            Style::default().fg(t.accent),
-        )));
-    }
 
     let total = app.dashboard_row_count();
     let capacity = area.height.saturating_sub(4) as usize;
@@ -2274,21 +2274,30 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         )));
     }
 
-    let mut shown_external_header = false;
+    // Track which category header was last rendered so we insert one on change.
+    let prev_cat: Option<u8> = if start > 0 {
+        app.instances.get(start - 1).map(|i| instance_category(i).0)
+    } else {
+        None
+    };
+    let mut last_cat = prev_cat;
 
     for index in start..end {
         let selected = index == app.selected_row;
 
         if index < app.instances.len() {
             let instance = &app.instances[index];
+            let (cat_key, cat_label) = instance_category(instance);
 
-            if !instance.managed && !shown_external_header && has_managed && has_external {
-                lines.push(Line::from(""));
+            if last_cat != Some(cat_key) {
+                if last_cat.is_some() {
+                    lines.push(Line::from(""));
+                }
                 lines.push(Line::from(Span::styled(
-                    "~ external ~",
+                    format!("~ {cat_label} ~"),
                     Style::default().fg(t.accent),
                 )));
-                shown_external_header = true;
+                last_cat = Some(cat_key);
             }
 
             let title = agents::derive_display_title(
