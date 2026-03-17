@@ -1,0 +1,1 @@
+Merge the pull request you just created. Use `gh pr merge --merge --auto` or your built-in PR merge capability. Enable auto-merge if the PR has required checks. Do not ask for confirmation, just merge the PR.
