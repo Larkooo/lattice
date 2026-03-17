@@ -248,45 +248,6 @@ pub fn remove_done_file(session_name: &str) {
     let _ = fs::remove_file(done_file_path(session_name));
 }
 
-/// Path to the PR state file for a session: `/tmp/lattice_{name}.pr`
-pub fn pr_file_path(session_name: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/lattice_{session_name}.pr"))
-}
-
-/// Returns true if a PR prompt has been sent for this session.
-pub fn is_pr_opened(session_name: &str) -> bool {
-    pr_file_path(session_name).exists()
-}
-
-/// Write the PR state file to mark that a PR prompt was sent.
-pub fn mark_pr_opened(session_name: &str) {
-    let _ = fs::write(pr_file_path(session_name), "");
-}
-
-/// Remove the PR state file for a session, ignoring errors if it doesn't exist.
-pub fn remove_pr_file(session_name: &str) {
-    let _ = fs::remove_file(pr_file_path(session_name));
-}
-
-/// Path to the merged state file for a session: `/tmp/lattice_{name}.merged`
-pub fn merged_file_path(session_name: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/lattice_{session_name}.merged"))
-}
-
-/// Returns true if a merge prompt has been sent for this session.
-pub fn is_merged(session_name: &str) -> bool {
-    merged_file_path(session_name).exists()
-}
-
-/// Write the merged state file to mark that a merge prompt was sent.
-pub fn mark_merged(session_name: &str) {
-    let _ = fs::write(merged_file_path(session_name), "");
-}
-
-/// Remove the merged state file for a session, ignoring errors if it doesn't exist.
-pub fn remove_merged_file(session_name: &str) {
-    let _ = fs::remove_file(merged_file_path(session_name));
-}
 
 /// Build the message to inject via send-keys for agents without a prompt flag.
 pub fn build_title_injection(session_name: &str) -> String {

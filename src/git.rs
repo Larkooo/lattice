@@ -3,6 +3,40 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Merged,
+    Closed,
+}
+
+/// Query the GitHub CLI for the state of the PR associated with the current
+/// branch in `working_dir`. Returns `None` if `gh` is unavailable, there is
+/// no PR for this branch, or the call fails.
+pub fn gh_pr_state(working_dir: &Path) -> Option<PrState> {
+    if working_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let output = Command::new("gh")
+        .args(["pr", "view", "--json", "state", "-q", ".state"])
+        .current_dir(working_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    match output.stdout.trim_ascii() {
+        b"OPEN" => Some(PrState::Open),
+        b"MERGED" => Some(PrState::Merged),
+        b"CLOSED" => Some(PrState::Closed),
+        _ => None,
+    }
+}
+
 /// Check if `path` is inside a git repository.
 pub fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
