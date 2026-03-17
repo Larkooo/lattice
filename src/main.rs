@@ -1100,7 +1100,7 @@ fn handle_main_key(
                         }
                         Err(err) => app.status_line = format!("Failed to send merge prompt: {err}"),
                     }
-                } else if instance.completed {
+                } else {
                     match tmux::send_keys(&instance.session.name, &agents::build_pr_prompt()) {
                         Ok(()) => {
                             agents::mark_pr_opened(&instance.session.name);
@@ -1109,8 +1109,6 @@ fn handle_main_key(
                         }
                         Err(err) => app.status_line = format!("Failed to send PR prompt: {err}"),
                     }
-                } else {
-                    app.status_line = "Instance not completed yet".to_owned();
                 }
             } else {
                 app.status_line = "Select an instance first".to_owned();
