@@ -42,6 +42,7 @@ struct AgentInstance {
     session: tmux::Session,
     managed: bool,
     title_override: String,
+    completed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -252,11 +253,13 @@ impl App {
                         )?;
                         let managed = agents::managed_session_agent_id(&session.name).is_some();
                         let title_override = agents::read_title_file(&session.name);
+                        let completed = agents::is_done(&session.name);
                         Some(AgentInstance {
                             agent,
                             session,
                             managed,
                             title_override,
+                            completed,
                         })
                     })
                     .collect();
@@ -265,12 +268,20 @@ impl App {
                     .sort_by(|a, b| a.session.name.cmp(&b.session.name));
                 self.clamp_selection();
 
-                self.status_line = format!(
-                    "{} running  {}  {} agents detected",
-                    self.instances.len(),
-                    "\u{2502}",
-                    self.available_agents.len()
-                );
+                let completed_count = self.instances.iter().filter(|i| i.completed).count();
+                let running_count = self.instances.len() - completed_count;
+                if completed_count > 0 {
+                    self.status_line = format!(
+                        "{running_count} running \u{2502} {completed_count} completed \u{2502} {} agents detected",
+                        self.available_agents.len()
+                    );
+                } else {
+                    self.status_line = format!(
+                        "{} running \u{2502} {} agents detected",
+                        self.instances.len(),
+                        self.available_agents.len()
+                    );
+                }
             }
             Err(err) => {
                 self.instances.clear();
@@ -508,8 +519,9 @@ impl App {
 
         match tmux::kill_session(&instance.session.name) {
             Ok(()) => {
-                // Clean up title file
+                // Clean up title and done files
                 agents::remove_title_file(&instance.session.name);
+                agents::remove_done_file(&instance.session.name);
 
                 // Clean up worktree if applicable
                 if let Some(wt) = worktree_path {
@@ -1019,6 +1031,20 @@ fn handle_main_key(
             }
         }
         KeyCode::Char('x') => app.kill_selected_instance(),
+        KeyCode::Char('p') => {
+            if let Some(instance) = app.active_instance_ref().cloned() {
+                if instance.completed {
+                    match tmux::send_keys(&instance.session.name, &agents::build_pr_prompt()) {
+                        Ok(()) => app.status_line = "PR prompt sent".to_owned(),
+                        Err(err) => app.status_line = format!("Failed to send PR prompt: {err}"),
+                    }
+                } else {
+                    app.status_line = "Instance not completed yet".to_owned();
+                }
+            } else {
+                app.status_line = "Select an instance first".to_owned();
+            }
+        }
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('0' as usize);
@@ -2207,15 +2233,29 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 &instance.session.pane_current_path,
                 &instance.title_override,
             );
-            let label = truncate(&title, 28);
 
-            let style = if selected {
-                Style::default()
-                    .fg(t.bg)
-                    .bg(t.highlight_bg)
-                    .add_modifier(Modifier::BOLD)
+            let (label, style) = if instance.completed {
+                let label = format!("\u{2713} {}", truncate(&title, 26));
+                let style = if selected {
+                    Style::default()
+                        .fg(t.bg)
+                        .bg(t.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.green)
+                };
+                (label, style)
             } else {
-                Style::default().fg(t.text)
+                let label = truncate(&title, 28);
+                let style = if selected {
+                    Style::default()
+                        .fg(t.bg)
+                        .bg(t.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.text)
+                };
+                (label, style)
             };
 
             lines.push(Line::from(Span::styled(label, style)));
@@ -2395,10 +2435,12 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         l
     } else if let Some(instance) = app.selected_instance() {
-        let state_style = if instance.session.attached {
-            Style::default().fg(t.green)
+        let (state_label, state_style) = if instance.completed {
+            ("completed", Style::default().fg(t.green))
+        } else if instance.session.attached {
+            ("attached", Style::default().fg(t.green))
         } else {
-            Style::default().fg(t.muted)
+            ("idle", Style::default().fg(t.muted))
         };
 
         let mut lines = vec![
@@ -2417,10 +2459,7 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             ]),
             Line::from(vec![
                 Span::styled("state    ", Style::default().fg(t.muted)),
-                Span::styled(
-                    if instance.session.attached { "attached" } else { "idle" },
-                    state_style,
-                ),
+                Span::styled(state_label, state_style),
             ]),
             Line::from(vec![
                 Span::styled("kind     ", Style::default().fg(t.muted)),
@@ -2498,10 +2537,12 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         return;
     };
 
-    let state_style = if instance.session.attached {
-        Style::default().fg(t.green)
+    let (state_label, state_style) = if instance.completed {
+        ("completed", Style::default().fg(t.green))
+    } else if instance.session.attached {
+        ("attached", Style::default().fg(t.green))
     } else {
-        Style::default().fg(t.muted)
+        ("idle", Style::default().fg(t.muted))
     };
 
     let mut lines = vec![
@@ -2520,10 +2561,7 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("state    ", Style::default().fg(t.muted)),
-            Span::styled(
-                if instance.session.attached { "attached" } else { "idle" },
-                state_style,
-            ),
+            Span::styled(state_label, state_style),
         ]),
         Line::from(vec![
             Span::styled("windows  ", Style::default().fg(t.muted)),
@@ -2666,6 +2704,8 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::styled(" split   ", desc_style),
             Span::styled("x", key_style),
             Span::styled(" stop   ", desc_style),
+            Span::styled("p", key_style),
+            Span::styled(" pr   ", desc_style),
             Span::styled("q", key_style),
             Span::styled(" quit", desc_style),
         ])

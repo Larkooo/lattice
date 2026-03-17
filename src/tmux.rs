@@ -157,7 +157,6 @@ pub fn split_window(session_name: &str, working_dir: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn send_keys(session_name: &str, text: &str) -> Result<()> {
     let target = format!("{session_name}:");
     let status = Command::new("tmux")
