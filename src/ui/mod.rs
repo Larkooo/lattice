@@ -224,8 +224,12 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
         let cw = col_widths[i];
         let display_label =
-            if cell.label.len() > cw { truncate(&cell.label, cw) } else { cell.label.clone() };
-        let label_len = display_label.len();
+            if unicode_width::UnicodeWidthStr::width(cell.label.as_str()) > cw {
+                truncate(&cell.label, cw)
+            } else {
+                cell.label.clone()
+            };
+        let label_len = unicode_width::UnicodeWidthStr::width(display_label.as_str());
         let pad_total = cw.saturating_sub(label_len);
         let pad_left = pad_total / 2;
         let pad_right = pad_total - pad_left;
@@ -1206,11 +1210,24 @@ pub fn visible_range(total: usize, selected: usize, capacity: usize) -> (usize, 
 }
 
 pub fn truncate(input: &str, max: usize) -> String {
-    if input.chars().count() <= max {
+    use unicode_width::UnicodeWidthChar;
+    use unicode_width::UnicodeWidthStr;
+
+    if UnicodeWidthStr::width(input) <= max {
         return input.to_owned();
     }
 
-    let mut out = input.chars().take(max.saturating_sub(1)).collect::<String>();
+    let mut out = String::new();
+    let mut width = 0;
+    let target = max.saturating_sub(1); // reserve 1 column for '~'
+    for c in input.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if width + cw > target {
+            break;
+        }
+        out.push(c);
+        width += cw;
+    }
     out.push('~');
     out
 }
