@@ -61,17 +61,28 @@ fn instance_category(instance: &AgentInstance) -> (u8, &'static str) {
 }
 
 /// Returns the project name for an instance: the basename of its working directory.
+/// When the instance is running inside a lattice worktree
+/// (`<root>/.lattice/worktrees/<id>`), the name is derived from the repo root
+/// rather than the numeric worktree ID.
 fn instance_project_name(instance: &AgentInstance) -> String {
     let path = &instance.session.pane_current_path;
     if path.is_empty() || path == "/" {
         return String::new();
     }
+
+    // Strip the worktree suffix so we use the parent repo name, not the ID.
+    let effective: &str = if let Some(idx) = path.find("/.lattice/worktrees/") {
+        &path[..idx]
+    } else {
+        path.as_str()
+    };
+
     if let Ok(home) = env::var("HOME") {
-        if path == &home {
+        if effective == home {
             return "~".to_owned();
         }
     }
-    std::path::Path::new(path)
+    std::path::Path::new(effective)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
