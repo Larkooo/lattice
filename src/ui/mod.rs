@@ -781,14 +781,19 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         if let Some(modal) = app.modal.as_ref() {
             match modal.step {
                 SpawnStep::Agent => [
+                    kb("1-9", "select"),
                     kb("\u{2191}/\u{2193}", "navigate"),
                     kb("enter", "next"),
                     kb_last("esc", "close"),
                 ]
                 .concat(),
                 SpawnStep::Path => [
-                    kb("\u{2191}/\u{2193}", "navigate"),
-                    kb("enter", "select"),
+                    kb(".", "here"),
+                    kb("/", "type"),
+                    kb("+", "mkdir"),
+                    kb("g", "clone"),
+                    kb("-", "up"),
+                    kb("~", "home"),
                     kb("h", "back"),
                     kb_last("esc", "close"),
                 ]
@@ -990,7 +995,16 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
                 } else {
                     Style::default().fg(t.text)
                 };
-                lines.push(Line::from(Span::styled(format!("  {}", agent.label), style)));
+                let num_style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg)
+                } else {
+                    Style::default().fg(t.muted)
+                };
+                let num_label = if i < 9 { format!("{}", i + 1) } else { " ".to_owned() };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {num_label} "), num_style),
+                    Span::styled(agent.label.clone(), style),
+                ]));
             }
 
             if end < app.available_agents.len() {
@@ -999,15 +1013,17 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
 
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("  enter", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled("  1-9", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" select   ", Style::default().fg(t.muted)),
+                Span::styled("enter", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
                 Span::styled(" next   ", Style::default().fg(t.muted)),
-                Span::styled("esc", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-                Span::styled(" cancel   ", Style::default().fg(t.muted)),
                 Span::styled(
                     "\u{2191}/\u{2193}",
                     Style::default().fg(t.text).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" move", Style::default().fg(t.muted)),
+                Span::styled(" move   ", Style::default().fg(t.muted)),
+                Span::styled("esc", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" cancel", Style::default().fg(t.muted)),
             ]));
         }
         SpawnStep::Path => {
@@ -1061,12 +1077,20 @@ fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
 
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("  enter", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-                Span::styled(" select   ", Style::default().fg(t.muted)),
+                Span::styled("  .", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" here   ", Style::default().fg(t.muted)),
+                Span::styled("/", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" type   ", Style::default().fg(t.muted)),
+                Span::styled("+", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" mkdir   ", Style::default().fg(t.muted)),
+                Span::styled("g", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" clone   ", Style::default().fg(t.muted)),
+                Span::styled("-", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" up   ", Style::default().fg(t.muted)),
+                Span::styled("~", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(" home   ", Style::default().fg(t.muted)),
                 Span::styled("h", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-                Span::styled(" back   ", Style::default().fg(t.muted)),
-                Span::styled("esc", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-                Span::styled(" cancel", Style::default().fg(t.muted)),
+                Span::styled(" back", Style::default().fg(t.muted)),
             ]));
         }
         SpawnStep::NewDirectoryName => {

@@ -56,6 +56,14 @@ pub fn handle_modal_key(app: &mut App, code: KeyCode) {
                     }
                 }
                 KeyCode::Enter => modal.step = SpawnStep::Path,
+                // Number keys: select agent by index and advance to path step
+                KeyCode::Char(c @ '1'..='9') => {
+                    let idx = (c as usize) - ('1' as usize);
+                    if idx < app.available_agents.len() {
+                        modal.selected_agent = idx;
+                        modal.step = SpawnStep::Path;
+                    }
+                }
                 _ => {}
             },
             SpawnStep::Path => match code {
@@ -97,6 +105,70 @@ pub fn handle_modal_key(app: &mut App, code: KeyCode) {
                         status_override = Some(format!("Path navigation failed: {err}"));
                     }
                 },
+                // Shortcut: select current directory
+                KeyCode::Char('.') => {
+                    action = Action::CreateInstance {
+                        agent_index: modal.selected_agent,
+                        working_dir: modal.browser.cwd().to_string_lossy().to_string(),
+                    }
+                }
+                // Shortcut: create new directory
+                KeyCode::Char('+') => {
+                    modal.step = SpawnStep::NewDirectoryName;
+                    modal.new_dir_name.clear();
+                }
+                // Shortcut: clone from git URL
+                KeyCode::Char('g') => {
+                    modal.step = SpawnStep::CloneUrl;
+                    modal.clone_url.clear();
+                }
+                // Shortcut: type path directly
+                KeyCode::Char('/') => {
+                    modal.step = SpawnStep::TypePath;
+                    modal.typed_path = modal.browser.cwd().to_string_lossy().to_string();
+                }
+                // Shortcut: go to parent directory
+                KeyCode::Char('-') | KeyCode::Backspace => {
+                    if let Err(err) = modal.browser.go_to_parent() {
+                        status_override = Some(format!("Navigation failed: {err}"));
+                    }
+                }
+                // Shortcut: jump to home directory
+                KeyCode::Char('~') => {
+                    if let Ok(home) = std::env::var("HOME") {
+                        let home_path = std::path::Path::new(&home);
+                        if let Err(err) = modal.browser.navigate_to(home_path) {
+                            status_override = Some(format!("Navigation failed: {err}"));
+                        }
+                    }
+                }
+                // Shortcut: open in current directory with Enter-like behavior
+                KeyCode::Char('l') | KeyCode::Right => {
+                    match modal.browser.activate_selected() {
+                        Ok(ActivateResult::Selected(path)) => {
+                            action = Action::CreateInstance {
+                                agent_index: modal.selected_agent,
+                                working_dir: path.to_string_lossy().to_string(),
+                            }
+                        }
+                        Ok(ActivateResult::ChangedDirectory) => {}
+                        Ok(ActivateResult::StartCreateDirectory) => {
+                            modal.step = SpawnStep::NewDirectoryName;
+                            modal.new_dir_name.clear();
+                        }
+                        Ok(ActivateResult::StartCloneFromUrl) => {
+                            modal.step = SpawnStep::CloneUrl;
+                            modal.clone_url.clear();
+                        }
+                        Ok(ActivateResult::StartTypePath) => {
+                            modal.step = SpawnStep::TypePath;
+                            modal.typed_path = modal.browser.cwd().to_string_lossy().to_string();
+                        }
+                        Err(err) => {
+                            status_override = Some(format!("Path navigation failed: {err}"));
+                        }
+                    }
+                }
                 _ => {}
             },
             SpawnStep::TypePath => match code {

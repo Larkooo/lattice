@@ -105,6 +105,17 @@ impl Browser {
         }
     }
 
+    pub fn go_to_parent(&mut self) -> Result<bool> {
+        if let Some(parent) = self.cwd.parent() {
+            let parent = parent.to_path_buf();
+            self.cwd = parent;
+            self.refresh()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn navigate_to(&mut self, path: &Path) -> Result<()> {
         if !path.is_dir() {
             return Err(anyhow::anyhow!("not a directory: {}", path.display()));
