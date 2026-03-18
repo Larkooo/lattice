@@ -24,12 +24,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     io::{self, Stdout},
     sync::mpsc,
     time::{Duration, Instant},
 };
+
+/// How long to wait before re-checking the PR state for a session.
+const PR_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Tmux-backed TUI for managing coding agents")]
@@ -195,6 +198,12 @@ struct App {
     stopping_sessions: HashSet<String>,
     stop_tx: mpsc::Sender<StopResult>,
     stop_rx: mpsc::Receiver<StopResult>,
+    /// Cached PR state per session name, together with when it was last fetched.
+    pr_cache: HashMap<String, (Option<git::PrState>, Instant)>,
+    /// Sessions currently having their PR state fetched in a background thread.
+    pending_pr_checks: HashSet<String>,
+    pr_tx: mpsc::Sender<(String, Option<git::PrState>)>,
+    pr_rx: mpsc::Receiver<(String, Option<git::PrState>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +227,7 @@ impl App {
         let tmux_available = tmux::is_tmux_available();
         let refresh_interval = Duration::from_secs(cfg.refresh_interval.max(1));
         let (stop_tx, stop_rx) = mpsc::channel();
+        let (pr_tx, pr_rx) = mpsc::channel();
 
         Self {
             available_agents: Vec::new(),
@@ -246,6 +256,10 @@ impl App {
             stopping_sessions: HashSet::new(),
             stop_tx,
             stop_rx,
+            pr_cache: HashMap::new(),
+            pending_pr_checks: HashSet::new(),
+            pr_tx,
+            pr_rx,
         }
     }
 
@@ -309,11 +323,34 @@ impl App {
                         let managed = agents::managed_session_agent_id(&session.name).is_some();
                         let title_override = agents::read_title_file(&session.name);
                         let completed = agents::is_done(&session.name);
-                        let pr_state = if session.pane_current_path.is_empty() {
-                            None
-                        } else {
-                            git::gh_pr_state(std::path::Path::new(&session.pane_current_path))
-                        };
+
+                        // Use cached PR state; kick off a background check if
+                        // the cache is missing or stale and no check is in flight.
+                        let pr_state = self
+                            .pr_cache
+                            .get(&session.name)
+                            .map(|(state, _)| state.clone())
+                            .unwrap_or(None);
+
+                        if !session.pane_current_path.is_empty()
+                            && !self.pending_pr_checks.contains(&session.name)
+                            && self
+                                .pr_cache
+                                .get(&session.name)
+                                .map(|(_, checked_at)| checked_at.elapsed() >= PR_RECHECK_INTERVAL)
+                                .unwrap_or(true)
+                        {
+                            self.pending_pr_checks.insert(session.name.clone());
+                            let tx = self.pr_tx.clone();
+                            let name = session.name.clone();
+                            let path = session.pane_current_path.clone();
+                            std::thread::spawn(move || {
+                                let state =
+                                    git::gh_pr_state(std::path::Path::new(&path));
+                                let _ = tx.send((name, state));
+                            });
+                        }
+
                         Some(AgentInstance {
                             agent,
                             session,
@@ -635,6 +672,28 @@ impl App {
         }
     }
 
+    fn drain_pr_results(&mut self) {
+        let mut resort = false;
+        while let Ok((name, state)) = self.pr_rx.try_recv() {
+            self.pending_pr_checks.remove(&name);
+            self.pr_cache.insert(name.clone(), (state.clone(), Instant::now()));
+            if let Some(inst) = self.instances.iter_mut().find(|i| i.session.name == name) {
+                if inst.pr_state != state {
+                    inst.pr_state = state;
+                    resort = true;
+                }
+            }
+        }
+        if resort {
+            self.instances.sort_by(|a, b| {
+                instance_project_name(a)
+                    .cmp(&instance_project_name(b))
+                    .then(instance_category(a).0.cmp(&instance_category(b).0))
+                    .then(a.session.name.cmp(&b.session.name))
+            });
+        }
+    }
+
     fn active_instance_ref(&self) -> Option<&AgentInstance> {
         if self.selected_tab == 0 {
             self.selected_instance()
@@ -752,18 +811,20 @@ fn run(cfg: config::AppConfig) -> Result<()> {
 
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     while !app.should_quit {
-        // Check for completed background stop operations
+        // Check for completed background operations
         app.drain_stop_results();
+        app.drain_pr_results();
 
         terminal.draw(|frame| draw_ui(frame, app))?;
 
-        // Poll more frequently when sessions are being stopped so the UI
-        // updates promptly when the background work finishes.
-        let max_wait = if app.stopping_sessions.is_empty() {
-            Duration::from_millis(250)
-        } else {
-            Duration::from_millis(100)
-        };
+        // Poll more frequently when background work is in flight so the UI
+        // updates promptly when it finishes.
+        let max_wait =
+            if app.stopping_sessions.is_empty() && app.pending_pr_checks.is_empty() {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_millis(100)
+            };
 
         let until_refresh = app
             .refresh_interval
