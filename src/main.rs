@@ -60,6 +60,23 @@ fn instance_category(instance: &AgentInstance) -> (u8, &'static str) {
     }
 }
 
+/// Returns the project name for an instance: the basename of its working directory.
+fn instance_project_name(instance: &AgentInstance) -> String {
+    let path = &instance.session.pane_current_path;
+    if path.is_empty() || path == "/" {
+        return String::new();
+    }
+    if let Ok(home) = env::var("HOME") {
+        if path == &home {
+            return "~".to_owned();
+        }
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 struct SplitPane {
     session_name: String,
@@ -298,7 +315,8 @@ impl App {
                     .collect();
 
                 self.instances.sort_by(|a, b| {
-                    instance_category(a).0.cmp(&instance_category(b).0)
+                    instance_project_name(a).cmp(&instance_project_name(b))
+                        .then(instance_category(a).0.cmp(&instance_category(b).0))
                         .then(a.session.name.cmp(&b.session.name))
                 });
                 self.clamp_selection();
@@ -2274,30 +2292,35 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         )));
     }
 
-    // Track which category header was last rendered so we insert one on change.
-    let prev_cat: Option<u8> = if start > 0 {
-        app.instances.get(start - 1).map(|i| instance_category(i).0)
+    // Track which project header was last rendered so we insert one on change.
+    let prev_project: Option<String> = if start > 0 {
+        app.instances.get(start - 1).map(instance_project_name)
     } else {
         None
     };
-    let mut last_cat = prev_cat;
+    let mut last_project = prev_project;
 
     for index in start..end {
         let selected = index == app.selected_row;
 
         if index < app.instances.len() {
             let instance = &app.instances[index];
-            let (cat_key, cat_label) = instance_category(instance);
+            let project = instance_project_name(instance);
 
-            if last_cat != Some(cat_key) {
-                if last_cat.is_some() {
+            if last_project.as_deref() != Some(&project) {
+                if last_project.is_some() {
                     lines.push(Line::from(""));
                 }
+                let header = if project.is_empty() {
+                    "~ unknown ~".to_owned()
+                } else {
+                    format!("~ {project} ~")
+                };
                 lines.push(Line::from(Span::styled(
-                    format!("~ {cat_label} ~"),
+                    header,
                     Style::default().fg(t.accent),
                 )));
-                last_cat = Some(cat_key);
+                last_project = Some(project);
             }
 
             let title = agents::derive_display_title(
