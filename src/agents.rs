@@ -6,6 +6,7 @@ use std::{
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.md");
 const PR_PROMPT_TEMPLATE: &str = include_str!("../prompts/pr.md");
+const MERGE_PR_PROMPT_TEMPLATE: &str = include_str!("../prompts/merge_pr.md");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDefinition {
@@ -41,6 +42,11 @@ pub fn build_title_instruction(session_name: &str) -> String {
 /// Build the prompt injected into an agent session to create a PR.
 pub fn build_pr_prompt() -> String {
     PR_PROMPT_TEMPLATE.to_owned()
+}
+
+/// Build the prompt injected into an agent session to merge an open PR.
+pub fn build_merge_pr_prompt() -> String {
+    MERGE_PR_PROMPT_TEMPLATE.to_owned()
 }
 
 const KNOWN_AGENTS: &[KnownAgent] = &[

@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     agents,
-    app::{instance_category, instance_project_name, App, AppScreen, SpawnStep},
+    app::{instance_project_name, App, AppScreen, SpawnStep},
     config, git,
     pathnav::EntryKind,
 };
