@@ -143,32 +143,30 @@ pub fn handle_modal_key(app: &mut App, code: KeyCode) {
                     }
                 }
                 // Shortcut: open in current directory with Enter-like behavior
-                KeyCode::Char('l') | KeyCode::Right => {
-                    match modal.browser.activate_selected() {
-                        Ok(ActivateResult::Selected(path)) => {
-                            action = Action::CreateInstance {
-                                agent_index: modal.selected_agent,
-                                working_dir: path.to_string_lossy().to_string(),
-                            }
-                        }
-                        Ok(ActivateResult::ChangedDirectory) => {}
-                        Ok(ActivateResult::StartCreateDirectory) => {
-                            modal.step = SpawnStep::NewDirectoryName;
-                            modal.new_dir_name.clear();
-                        }
-                        Ok(ActivateResult::StartCloneFromUrl) => {
-                            modal.step = SpawnStep::CloneUrl;
-                            modal.clone_url.clear();
-                        }
-                        Ok(ActivateResult::StartTypePath) => {
-                            modal.step = SpawnStep::TypePath;
-                            modal.typed_path = modal.browser.cwd().to_string_lossy().to_string();
-                        }
-                        Err(err) => {
-                            status_override = Some(format!("Path navigation failed: {err}"));
+                KeyCode::Char('l') | KeyCode::Right => match modal.browser.activate_selected() {
+                    Ok(ActivateResult::Selected(path)) => {
+                        action = Action::CreateInstance {
+                            agent_index: modal.selected_agent,
+                            working_dir: path.to_string_lossy().to_string(),
                         }
                     }
-                }
+                    Ok(ActivateResult::ChangedDirectory) => {}
+                    Ok(ActivateResult::StartCreateDirectory) => {
+                        modal.step = SpawnStep::NewDirectoryName;
+                        modal.new_dir_name.clear();
+                    }
+                    Ok(ActivateResult::StartCloneFromUrl) => {
+                        modal.step = SpawnStep::CloneUrl;
+                        modal.clone_url.clear();
+                    }
+                    Ok(ActivateResult::StartTypePath) => {
+                        modal.step = SpawnStep::TypePath;
+                        modal.typed_path = modal.browser.cwd().to_string_lossy().to_string();
+                    }
+                    Err(err) => {
+                        status_override = Some(format!("Path navigation failed: {err}"));
+                    }
+                },
                 _ => {}
             },
             SpawnStep::TypePath => match code {
@@ -392,6 +390,33 @@ pub fn handle_main_key(
             }
         }
         KeyCode::Char('x') => app.kill_selected_instance(),
+        KeyCode::Char('f') => {
+            if let Some(instance) = app.active_instance_ref().cloned() {
+                if instance.pr_state != Some(git::PrState::Open) {
+                    app.status_line = "No open PR to fix".to_owned();
+                } else if let Some(checks) = instance.pr_checks.as_ref() {
+                    if !checks.has_failures() {
+                        app.status_line = "No failing CI checks on this PR".to_owned();
+                    } else {
+                        match tmux::send_keys(
+                            &instance.session.name,
+                            &agents::build_fix_ci_prompt(&checks.failed),
+                        ) {
+                            Ok(()) => {
+                                app.status_line = "CI fix prompt sent to the instance".to_owned()
+                            }
+                            Err(err) => {
+                                app.status_line = format!("Failed to send CI fix prompt: {err}")
+                            }
+                        }
+                    }
+                } else {
+                    app.status_line = "CI status not available yet".to_owned();
+                }
+            } else {
+                app.status_line = "Select an instance first".to_owned();
+            }
+        }
         KeyCode::Char('p') => {
             if let Some(instance) = app.active_instance_ref().cloned() {
                 match &instance.pr_state {

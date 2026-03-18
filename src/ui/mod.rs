@@ -19,10 +19,7 @@ use settings::{draw_permissions_view, draw_settings_view, draw_startup_cmds_view
 
 /// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
 fn format_uptime(created_epoch: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     if now <= created_epoch {
         return "just now".to_owned();
     }
@@ -332,6 +329,19 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(t.yellow)
                 };
                 (label, style)
+            } else if instance
+                .pr_checks
+                .as_ref()
+                .map(|checks| checks.has_failures())
+                .unwrap_or(false)
+            {
+                let label = format!("\u{2717} {}", truncate(&title, 26));
+                let style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.red)
+                };
+                (label, style)
             } else if instance.pr_state == Some(git::PrState::Merged) {
                 let label = format!("\u{21B3} {}", truncate(&title, 26));
                 let style = if selected {
@@ -522,18 +532,7 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         l
     } else if let Some(instance) = app.selected_instance() {
-        let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
-        let (state_label, state_style) = if instance.pr_state == Some(git::PrState::Merged) {
-            (format!("merged{pr_tag}"), Style::default().fg(t.accent))
-        } else if instance.pr_state == Some(git::PrState::Open) {
-            (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
-        } else if instance.completed {
-            ("completed".to_owned(), Style::default().fg(t.green))
-        } else if instance.session.attached {
-            ("attached".to_owned(), Style::default().fg(t.green))
-        } else {
-            ("idle".to_owned(), Style::default().fg(t.muted))
-        };
+        let (state_label, state_style) = instance_state_label(app, instance);
 
         let title = agents::derive_display_title(
             &instance.session.name,
@@ -547,16 +546,35 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 title,
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled(
-                instance.agent.label.clone(),
-                Style::default().fg(t.muted),
-            )),
+            Line::from(Span::styled(instance.agent.label.clone(), Style::default().fg(t.muted))),
             Line::from(""),
             Line::from(vec![
                 Span::styled("state    ", Style::default().fg(t.muted)),
                 Span::styled(state_label, state_style),
             ]),
         ];
+
+        if let Some(checks) = instance.pr_checks.as_ref() {
+            if let Some(ci_label) = checks.short_label() {
+                let ci_style = if checks.has_failures() {
+                    Style::default().fg(t.red)
+                } else if checks.has_pending() {
+                    Style::default().fg(t.yellow)
+                } else {
+                    Style::default().fg(t.green)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("ci       ", Style::default().fg(t.muted)),
+                    Span::styled(ci_label, ci_style),
+                ]));
+                if checks.has_failures() {
+                    lines.push(Line::from(vec![
+                        Span::styled("checks   ", Style::default().fg(t.muted)),
+                        Span::styled(checks.failed.join(", "), Style::default().fg(t.text)),
+                    ]));
+                }
+            }
+        }
 
         if !instance.branch.is_empty() {
             lines.push(Line::from(vec![
@@ -633,19 +651,10 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let is_stopping = app.stopping_sessions.contains(&instance.session.name);
 
-    let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
     let (state_label, state_style) = if is_stopping {
         ("stopping\u{2026}".to_owned(), Style::default().fg(t.yellow))
-    } else if instance.pr_state == Some(git::PrState::Merged) {
-        (format!("merged{pr_tag}"), Style::default().fg(t.accent))
-    } else if instance.pr_state == Some(git::PrState::Open) {
-        (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
-    } else if instance.completed {
-        ("completed".to_owned(), Style::default().fg(t.green))
-    } else if instance.session.attached {
-        ("attached".to_owned(), Style::default().fg(t.green))
     } else {
-        ("idle".to_owned(), Style::default().fg(t.muted))
+        instance_state_label(app, instance)
     };
 
     let title = agents::derive_display_title(
@@ -656,20 +665,36 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     );
 
     let mut lines = vec![
-        Line::from(Span::styled(
-            title,
-            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            instance.agent.label.clone(),
-            Style::default().fg(t.muted),
-        )),
+        Line::from(Span::styled(title, Style::default().fg(t.text).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(instance.agent.label.clone(), Style::default().fg(t.muted))),
         Line::from(""),
         Line::from(vec![
             Span::styled("state    ", Style::default().fg(t.muted)),
             Span::styled(state_label, state_style),
         ]),
     ];
+
+    if let Some(checks) = instance.pr_checks.as_ref() {
+        if let Some(ci_label) = checks.short_label() {
+            let ci_style = if checks.has_failures() {
+                Style::default().fg(t.red)
+            } else if checks.has_pending() {
+                Style::default().fg(t.yellow)
+            } else {
+                Style::default().fg(t.green)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("ci       ", Style::default().fg(t.muted)),
+                Span::styled(ci_label, ci_style),
+            ]));
+            if checks.has_failures() {
+                lines.push(Line::from(vec![
+                    Span::styled("checks   ", Style::default().fg(t.muted)),
+                    Span::styled(checks.failed.join(", "), Style::default().fg(t.text)),
+                ]));
+            }
+        }
+    }
 
     if !instance.branch.is_empty() {
         lines.push(Line::from(vec![
@@ -680,10 +705,7 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     lines.push(Line::from(vec![
         Span::styled("uptime   ", Style::default().fg(t.muted)),
-        Span::styled(
-            format_uptime(instance.session.created_epoch),
-            Style::default().fg(t.text),
-        ),
+        Span::styled(format_uptime(instance.session.created_epoch), Style::default().fg(t.text)),
     ]));
 
     lines.push(Line::from(vec![
@@ -745,6 +767,24 @@ fn draw_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+fn instance_state_label(app: &App, instance: &crate::app::AgentInstance) -> (String, Style) {
+    let t = app.theme;
+    let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
+    if instance.pr_checks.as_ref().map(|checks| checks.has_failures()).unwrap_or(false) {
+        (format!("PR{pr_tag} checks failing"), Style::default().fg(t.red))
+    } else if instance.pr_state == Some(git::PrState::Merged) {
+        (format!("merged{pr_tag}"), Style::default().fg(t.accent))
+    } else if instance.pr_state == Some(git::PrState::Open) {
+        (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
+    } else if instance.completed {
+        ("completed".to_owned(), Style::default().fg(t.green))
+    } else if instance.session.attached {
+        ("attached".to_owned(), Style::default().fg(t.green))
+    } else {
+        ("idle".to_owned(), Style::default().fg(t.muted))
+    }
+}
+
 fn draw_footer_rule(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
     let w = area.width as usize;
@@ -766,10 +806,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     // Helper to build a key-desc pair with trailing spacing.
     let kb = |k: &str, d: &str| -> Vec<Span<'_>> {
-        vec![
-            Span::styled(k.to_owned(), key_style),
-            Span::styled(format!(" {d}   "), desc_style),
-        ]
+        vec![Span::styled(k.to_owned(), key_style), Span::styled(format!(" {d}   "), desc_style)]
     };
     // Same but no trailing spacing (for last item).
     let kb_last = |k: &str, d: &str| -> Vec<Span<'_>> {
@@ -810,12 +847,8 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     } else if app.startup_cmds_open {
         // ── Startup commands sub-view ──
         if app.startup_cmds_adding.is_some() {
-            [
-                kb("\u{2191}/\u{2193}", "navigate"),
-                kb("enter", "confirm"),
-                kb_last("esc", "back"),
-            ]
-            .concat()
+            [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "confirm"), kb_last("esc", "back")]
+                .concat()
         } else {
             [
                 kb("\u{2191}/\u{2193}", "navigate"),
@@ -827,23 +860,15 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
     } else if app.permissions_open {
         // ── Permissions sub-view ──
-        [
-            kb("\u{2191}/\u{2193}", "navigate"),
-            kb("enter", "toggle"),
-            kb_last("esc", "back"),
-        ]
-        .concat()
+        [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "toggle"), kb_last("esc", "back")]
+            .concat()
     } else if app.settings_open {
         // ── Settings view ──
         if app.settings_editing.is_some() {
             [kb("enter", "save"), kb_last("esc", "cancel")].concat()
         } else {
-            [
-                kb("\u{2191}/\u{2193}", "navigate"),
-                kb("enter", "edit"),
-                kb_last("esc", "back"),
-            ]
-            .concat()
+            [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "edit"), kb_last("esc", "back")]
+                .concat()
         }
     } else if app.is_split_mode() {
         // ── Split selection ──
@@ -900,11 +925,19 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             s.extend(kb("x", "stop"));
 
             // Dynamic PR keybinds
-            match active.and_then(|i| i.pr_state.as_ref()) {
-                Some(git::PrState::Merged) => {
+            match active {
+                Some(i)
+                    if i.pr_state == Some(git::PrState::Open)
+                        && i.pr_checks.as_ref().map(|c| c.has_failures()).unwrap_or(false) =>
+                {
+                    s.extend(kb("f", "fix ci"));
+                    s.extend(kb("p", "merge pr"));
                     s.extend(kb("o", "view pr"));
                 }
-                Some(git::PrState::Open) => {
+                Some(i) if i.pr_state == Some(git::PrState::Merged) => {
+                    s.extend(kb("o", "view pr"));
+                }
+                Some(i) if i.pr_state == Some(git::PrState::Open) => {
                     s.extend(kb("p", "merge pr"));
                     s.extend(kb("o", "view pr"));
                 }

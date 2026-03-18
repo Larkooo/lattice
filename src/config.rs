@@ -42,6 +42,7 @@ struct ThemeConfigFile {
     highlight: Option<String>,
     yellow: Option<String>,
     green: Option<String>,
+    red: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -93,6 +94,7 @@ pub struct ThemeConfig {
     pub highlight: Option<[u8; 3]>,
     pub yellow: Option<[u8; 3]>,
     pub green: Option<[u8; 3]>,
+    pub red: Option<[u8; 3]>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +204,7 @@ pub fn load_config() -> AppConfig {
         config.theme.highlight = theme.highlight.as_deref().and_then(parse_hex_color);
         config.theme.yellow = theme.yellow.as_deref().and_then(parse_hex_color);
         config.theme.green = theme.green.as_deref().and_then(parse_hex_color);
+        config.theme.red = theme.red.as_deref().and_then(parse_hex_color);
     }
 
     config.custom_agents = file.agents;
@@ -262,6 +265,8 @@ struct ThemeConfigSave {
     yellow: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     green: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    red: Option<String>,
 }
 
 impl ThemeConfigSave {
@@ -274,6 +279,7 @@ impl ThemeConfigSave {
             && self.highlight.is_none()
             && self.yellow.is_none()
             && self.green.is_none()
+            && self.red.is_none()
     }
 }
 
@@ -314,6 +320,7 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
             highlight: config.theme.highlight.map(rgb_to_hex),
             yellow: config.theme.yellow.map(rgb_to_hex),
             green: config.theme.green.map(rgb_to_hex),
+            red: config.theme.red.map(rgb_to_hex),
         },
         agents: config.custom_agents.clone(),
         startup_commands: config.startup_commands.clone(),

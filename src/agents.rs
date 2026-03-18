@@ -7,6 +7,7 @@ use std::{
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.md");
 const PR_PROMPT_TEMPLATE: &str = include_str!("../prompts/pr.md");
 const MERGE_PR_PROMPT_TEMPLATE: &str = include_str!("../prompts/merge_pr.md");
+const FIX_CI_PROMPT_TEMPLATE: &str = include_str!("../prompts/fix_ci.md");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDefinition {
@@ -47,6 +48,17 @@ pub fn build_pr_prompt() -> String {
 /// Build the prompt injected into an agent session to merge an open PR.
 pub fn build_merge_pr_prompt() -> String {
     MERGE_PR_PROMPT_TEMPLATE.to_owned()
+}
+
+/// Build the prompt injected into an agent session to fix failing PR checks.
+pub fn build_fix_ci_prompt(failed_checks: &[String]) -> String {
+    let failed = if failed_checks.is_empty() {
+        "Unknown failing checks.".to_owned()
+    } else {
+        failed_checks.iter().map(|check| format!("- {check}")).collect::<Vec<String>>().join("\n")
+    };
+
+    FIX_CI_PROMPT_TEMPLATE.replace("{failed_checks}", &failed)
 }
 
 const KNOWN_AGENTS: &[KnownAgent] = &[
