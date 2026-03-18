@@ -717,54 +717,149 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
     let desc_style = Style::default().fg(t.muted);
 
-    let pane_count = app.split.as_ref().map(|s| s.panes.len()).unwrap_or(0);
-    let commands = if app.is_split_mode() {
-        Line::from(vec![
-            Span::styled("v", key_style),
-            Span::styled(" add pane   ", desc_style),
-            Span::styled("c", key_style),
-            Span::styled(" remove   ", desc_style),
-            Span::styled("\u{2190}/\u{2192}", key_style),
-            Span::styled(" navigate   ", desc_style),
-            Span::styled("enter", key_style),
-            Span::styled(
-                format!(
-                    " launch ({})   ",
-                    if pane_count < 2 {
-                        "need 2+".to_owned()
-                    } else {
-                        format!("{pane_count} panes")
-                    }
-                ),
-                desc_style,
-            ),
-            Span::styled("esc", key_style),
-            Span::styled(" cancel   ", desc_style),
-            Span::styled("q", key_style),
-            Span::styled(" quit", desc_style),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("s", key_style),
-            Span::styled(" sessions   ", desc_style),
-            Span::styled("1-9", key_style),
-            Span::styled(" jump   ", desc_style),
-            Span::styled("n", key_style),
-            Span::styled(" new   ", desc_style),
-            Span::styled("enter", key_style),
-            Span::styled(" attach   ", desc_style),
-            Span::styled("t", key_style),
-            Span::styled(" terminal   ", desc_style),
-            Span::styled("v", key_style),
-            Span::styled(" split   ", desc_style),
-            Span::styled("x", key_style),
-            Span::styled(" stop   ", desc_style),
-            Span::styled("p", key_style),
-            Span::styled(" pr   ", desc_style),
-            Span::styled("q", key_style),
-            Span::styled(" quit", desc_style),
-        ])
+    // Helper to build a key-desc pair with trailing spacing.
+    let kb = |k: &str, d: &str| -> Vec<Span<'_>> {
+        vec![
+            Span::styled(k.to_owned(), key_style),
+            Span::styled(format!(" {d}   "), desc_style),
+        ]
     };
+    // Same but no trailing spacing (for last item).
+    let kb_last = |k: &str, d: &str| -> Vec<Span<'_>> {
+        vec![Span::styled(k.to_owned(), key_style), Span::styled(format!(" {d}"), desc_style)]
+    };
+
+    let spans: Vec<Span<'_>> = if app.modal.is_some() {
+        // ── Spawn modal ──
+        if let Some(modal) = app.modal.as_ref() {
+            match modal.step {
+                SpawnStep::Agent => [
+                    kb("\u{2191}/\u{2193}", "navigate"),
+                    kb("enter", "next"),
+                    kb_last("esc", "close"),
+                ]
+                .concat(),
+                SpawnStep::Path => [
+                    kb("\u{2191}/\u{2193}", "navigate"),
+                    kb("enter", "select"),
+                    kb("h", "back"),
+                    kb_last("esc", "close"),
+                ]
+                .concat(),
+                SpawnStep::NewDirectoryName => {
+                    [kb("enter", "create"), kb_last("esc", "back")].concat()
+                }
+                SpawnStep::CloneUrl => [kb("enter", "clone"), kb_last("esc", "back")].concat(),
+                SpawnStep::TypePath => [kb("enter", "go"), kb_last("esc", "back")].concat(),
+            }
+        } else {
+            vec![]
+        }
+    } else if app.startup_cmds_open {
+        // ── Startup commands sub-view ──
+        if app.startup_cmds_adding.is_some() {
+            [
+                kb("\u{2191}/\u{2193}", "navigate"),
+                kb("enter", "confirm"),
+                kb_last("esc", "back"),
+            ]
+            .concat()
+        } else {
+            [
+                kb("\u{2191}/\u{2193}", "navigate"),
+                kb("a", "add"),
+                kb("x", "remove"),
+                kb_last("esc", "back"),
+            ]
+            .concat()
+        }
+    } else if app.permissions_open {
+        // ── Permissions sub-view ──
+        [
+            kb("\u{2191}/\u{2193}", "navigate"),
+            kb("enter", "toggle"),
+            kb_last("esc", "back"),
+        ]
+        .concat()
+    } else if app.settings_open {
+        // ── Settings view ──
+        if app.settings_editing.is_some() {
+            [kb("enter", "save"), kb_last("esc", "cancel")].concat()
+        } else {
+            [
+                kb("\u{2191}/\u{2193}", "navigate"),
+                kb("enter", "edit"),
+                kb_last("esc", "back"),
+            ]
+            .concat()
+        }
+    } else if app.is_split_mode() {
+        // ── Split selection ──
+        let pane_count = app.split.as_ref().map(|s| s.panes.len()).unwrap_or(0);
+        [
+            kb("v", "add pane"),
+            kb("c", "remove"),
+            kb("\u{2190}/\u{2192}", "navigate"),
+            vec![
+                Span::styled("enter".to_owned(), key_style),
+                Span::styled(
+                    format!(
+                        " launch ({})   ",
+                        if pane_count < 2 { "need 2+".to_owned() } else { format!("{pane_count}") }
+                    ),
+                    desc_style,
+                ),
+            ],
+            kb("esc", "cancel"),
+            kb_last("q", "quit"),
+        ]
+        .concat()
+    } else {
+        // ── Main view ── context-dependent on selection
+        let active = app.active_instance_ref();
+        let on_dashboard = app.selected_tab == 0;
+
+        let mut s: Vec<Span<'_>> = Vec::new();
+
+        if !on_dashboard {
+            s.extend(kb("s", "sessions"));
+        }
+
+        if !app.instances.is_empty() {
+            s.extend(kb("1-9", "jump"));
+        }
+
+        s.extend(kb("n", "new"));
+
+        if on_dashboard && app.is_action_row_selected() {
+            s.extend(kb("enter", "spawn"));
+        } else if on_dashboard && app.is_settings_row_selected() {
+            s.extend(kb("enter", "settings"));
+        } else if active.is_some() {
+            s.extend(kb("enter", "attach"));
+            s.extend(kb("t", "terminal"));
+        }
+
+        if !app.instances.is_empty() {
+            s.extend(kb("v", "split"));
+        }
+
+        if active.is_some() {
+            s.extend(kb("x", "stop"));
+
+            // Dynamic PR keybind — hide when already merged (nothing to do)
+            match active.and_then(|i| i.pr_state.as_ref()) {
+                Some(git::PrState::Merged) => {}
+                Some(git::PrState::Open) => s.extend(kb("p", "merge pr")),
+                _ => s.extend(kb("p", "open pr")),
+            }
+        }
+
+        s.extend(kb_last("q", "quit"));
+        s
+    };
+
+    let commands = Line::from(spans);
 
     frame.render_widget(
         Paragraph::new(commands).alignment(Alignment::Center).style(Style::default().bg(t.bg)),
