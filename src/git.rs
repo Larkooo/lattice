@@ -54,12 +54,7 @@ pub fn is_git_repo(path: &Path) -> bool {
 pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
     // Find the repo root
     let output = Command::new("git")
-        .args([
-            "-C",
-            &repo_path.to_string_lossy(),
-            "rev-parse",
-            "--show-toplevel",
-        ])
+        .args(["-C", &repo_path.to_string_lossy(), "rev-parse", "--show-toplevel"])
         .output()
         .context("failed to run git rev-parse")?;
 
@@ -71,11 +66,7 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
     let root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
 
     // Generate a short timestamp-based ID
-    let id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .to_string();
+    let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().to_string();
 
     // Pull latest changes before creating the worktree so the new branch
     // starts from the most up-to-date HEAD.
@@ -126,20 +117,11 @@ pub fn is_worktree_path(path: &Path) -> bool {
 pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     // Derive the repo root: go up from .lattice/worktrees/<id>
     // worktree_path = <root>/.lattice/worktrees/<id>
-    let id = worktree_path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let id = worktree_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
 
     // Find the main repo root by asking the worktree's git
     let output = Command::new("git")
-        .args([
-            "-C",
-            &worktree_path.to_string_lossy(),
-            "worktree",
-            "list",
-            "--porcelain",
-        ])
+        .args(["-C", &worktree_path.to_string_lossy(), "worktree", "list", "--porcelain"])
         .output()
         .context("failed to run git worktree list")?;
 
@@ -157,14 +139,7 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     // Remove the worktree (--force in case of uncommitted changes)
     if !root.is_empty() {
         let _ = Command::new("git")
-            .args([
-                "-C",
-                &root,
-                "worktree",
-                "remove",
-                "--force",
-                &worktree_path.to_string_lossy(),
-            ])
+            .args(["-C", &root, "worktree", "remove", "--force", &worktree_path.to_string_lossy()])
             .output();
     }
 
@@ -176,9 +151,7 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     // Delete the branch
     if !root.is_empty() && !id.is_empty() {
         let branch = format!("lattice/{id}");
-        let _ = Command::new("git")
-            .args(["-C", &root, "branch", "-D", &branch])
-            .output();
+        let _ = Command::new("git").args(["-C", &root, "branch", "-D", &branch]).output();
     }
 
     Ok(())
@@ -209,11 +182,7 @@ fn install_coauthor_hook(working_dir: &Path, add_lattice: bool) -> Result<()> {
     }
 
     let hooks_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    let hooks_dir = if hooks_dir.is_relative() {
-        working_dir.join(hooks_dir)
-    } else {
-        hooks_dir
-    };
+    let hooks_dir = if hooks_dir.is_relative() { working_dir.join(hooks_dir) } else { hooks_dir };
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("failed to create hooks dir: {}", hooks_dir.display()))?;
 
@@ -314,34 +283,22 @@ mod tests {
 
     #[test]
     fn parse_repo_name_https() {
-        assert_eq!(
-            parse_repo_name("https://github.com/user/repo.git").unwrap(),
-            "repo"
-        );
+        assert_eq!(parse_repo_name("https://github.com/user/repo.git").unwrap(), "repo");
     }
 
     #[test]
     fn parse_repo_name_https_no_git() {
-        assert_eq!(
-            parse_repo_name("https://github.com/user/repo").unwrap(),
-            "repo"
-        );
+        assert_eq!(parse_repo_name("https://github.com/user/repo").unwrap(), "repo");
     }
 
     #[test]
     fn parse_repo_name_ssh() {
-        assert_eq!(
-            parse_repo_name("git@github.com:user/repo.git").unwrap(),
-            "repo"
-        );
+        assert_eq!(parse_repo_name("git@github.com:user/repo.git").unwrap(), "repo");
     }
 
     #[test]
     fn parse_repo_name_trailing_slash() {
-        assert_eq!(
-            parse_repo_name("https://github.com/user/repo/").unwrap(),
-            "repo"
-        );
+        assert_eq!(parse_repo_name("https://github.com/user/repo/").unwrap(), "repo");
     }
 
     #[test]

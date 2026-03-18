@@ -50,12 +50,7 @@ impl Browser {
     }
 
     fn with_mode(start: PathBuf, simple: bool) -> Result<Self> {
-        let mut browser = Self {
-            cwd: start,
-            entries: Vec::new(),
-            selected: 0,
-            simple,
-        };
+        let mut browser = Self { cwd: start, entries: Vec::new(), selected: 0, simple };
         browser.refresh()?;
         Ok(browser)
     }
@@ -125,9 +120,7 @@ impl Browser {
             return Err(anyhow::anyhow!("directory name cannot be empty"));
         }
         if trimmed.contains('/') || trimmed.contains('\\') {
-            return Err(anyhow::anyhow!(
-                "directory name must be a single path segment"
-            ));
+            return Err(anyhow::anyhow!("directory name must be a single path segment"));
         }
 
         let new_path = self.cwd.join(trimmed);
@@ -188,11 +181,7 @@ impl Browser {
         }
 
         for (name, path) in dirs {
-            entries.push(Entry {
-                kind: EntryKind::Directory,
-                label: name,
-                path,
-            });
+            entries.push(Entry { kind: EntryKind::Directory, label: name, path });
         }
 
         self.entries = entries;
@@ -274,9 +263,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
 
         let mut browser = Browser::new(root.clone()).expect("browser create");
-        let created = browser
-            .create_directory("new_workspace")
-            .expect("create dir");
+        let created = browser.create_directory("new_workspace").expect("create dir");
 
         assert_eq!(created, root.join("new_workspace"));
         assert_eq!(browser.cwd(), root.join("new_workspace").as_path());

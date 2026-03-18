@@ -157,25 +157,18 @@ pub fn classify_agent_from_session(
 
     let binary = command_binary(current_command)?;
 
-    if let Some(found) = available
-        .iter()
-        .find(|a| binary_matches(&binary, &a.binary))
-        .cloned()
-    {
+    if let Some(found) = available.iter().find(|a| binary_matches(&binary, &a.binary)).cloned() {
         return Some(found);
     }
 
-    KNOWN_AGENTS
-        .iter()
-        .find(|a| binary_matches(&binary, a.binary))
-        .map(|a| AgentDefinition {
-            id: a.id.to_owned(),
-            label: a.label.to_owned(),
-            binary: a.binary.to_owned(),
-            launch: a.launch.to_owned(),
-            prompt_flag: a.prompt_flag.map(ToOwned::to_owned),
-            bypass_flag: a.bypass_flag.map(ToOwned::to_owned),
-        })
+    KNOWN_AGENTS.iter().find(|a| binary_matches(&binary, a.binary)).map(|a| AgentDefinition {
+        id: a.id.to_owned(),
+        label: a.label.to_owned(),
+        binary: a.binary.to_owned(),
+        launch: a.launch.to_owned(),
+        prompt_flag: a.prompt_flag.map(ToOwned::to_owned),
+        bypass_flag: a.bypass_flag.map(ToOwned::to_owned),
+    })
 }
 
 /// Build the shell command used to launch an agent, injecting a title
@@ -192,12 +185,7 @@ pub fn build_launch_command(
 
     if let Some(flag) = &agent.prompt_flag {
         if title_injection_enabled {
-            cmd = format!(
-                "{} {} \"{}\"",
-                cmd,
-                flag,
-                build_title_instruction(session_name)
-            );
+            cmd = format!("{} {} \"{}\"", cmd, flag, build_title_instruction(session_name));
         }
     }
 
@@ -248,17 +236,13 @@ pub fn remove_done_file(session_name: &str) {
     let _ = fs::remove_file(done_file_path(session_name));
 }
 
-
 /// Build the message to inject via send-keys for agents without a prompt flag.
 pub fn build_title_injection(session_name: &str) -> String {
     build_title_instruction(session_name)
 }
 
 pub fn build_managed_session_name(agent_id: &str) -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // Use underscores — dots are special in tmux target syntax (session.window.pane)
     format!("lattice_{agent_id}_{ts}")
 }
@@ -347,12 +331,10 @@ pub fn managed_session_agent_id(session_name: &str) -> Option<String> {
 fn split_managed_session_name(session_name: &str) -> Option<(&str, &str)> {
     // Support both legacy "agentssh.*.*" sessions and current "lattice_*_*"
     // sessions so existing tmux sessions remain visible after the rename.
-    let (prefix, agent, suffix) = if session_name.starts_with("lattice_") {
-        let rest = &session_name["lattice_".len()..];
+    let (prefix, agent, suffix) = if let Some(rest) = session_name.strip_prefix("lattice_") {
         let pos = rest.rfind('_')?;
         ("lattice", &rest[..pos], &rest[pos + 1..])
-    } else if session_name.starts_with("agentssh_") {
-        let rest = &session_name["agentssh_".len()..];
+    } else if let Some(rest) = session_name.strip_prefix("agentssh_") {
         let pos = rest.rfind('_')?;
         ("agentssh", &rest[..pos], &rest[pos + 1..])
     } else {
@@ -388,17 +370,11 @@ pub(crate) fn binary_matches(actual: &str, expected: &str) -> bool {
 fn find_binary(binary: &str) -> Option<PathBuf> {
     if binary.contains('/') {
         let p = Path::new(binary);
-        return if is_executable(p) {
-            Some(p.to_path_buf())
-        } else {
-            None
-        };
+        return if is_executable(p) { Some(p.to_path_buf()) } else { None };
     }
 
     let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var)
-        .map(|p| p.join(binary))
-        .find(|candidate| is_executable(candidate))
+    env::split_paths(&path_var).map(|p| p.join(binary)).find(|candidate| is_executable(candidate))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -427,14 +403,8 @@ mod tests {
 
     #[test]
     fn parses_managed_session_name() {
-        assert_eq!(
-            managed_session_agent_id("agentssh.codex.1234"),
-            Some("codex".to_owned())
-        );
-        assert_eq!(
-            managed_session_agent_id("lattice_codex_1234"),
-            Some("codex".to_owned())
-        );
+        assert_eq!(managed_session_agent_id("agentssh.codex.1234"), Some("codex".to_owned()));
+        assert_eq!(managed_session_agent_id("lattice_codex_1234"), Some("codex".to_owned()));
         assert_eq!(managed_session_agent_id("random"), None);
     }
 
@@ -447,10 +417,7 @@ mod tests {
 
     #[test]
     fn command_binary_extracts_leaf() {
-        assert_eq!(
-            command_binary("/usr/local/bin/codex --help"),
-            Some("codex".to_owned())
-        );
+        assert_eq!(command_binary("/usr/local/bin/codex --help"), Some("codex".to_owned()));
         assert_eq!(command_binary("claude"), Some("claude".to_owned()));
         assert_eq!(command_binary(""), None);
     }
@@ -547,10 +514,7 @@ mod tests {
         assert!(!cmd.contains("--dangerously-skip-permissions"));
 
         // bypass enabled but agent has no flag
-        let agent_no_bypass = AgentDefinition {
-            bypass_flag: None,
-            ..agent.clone()
-        };
+        let agent_no_bypass = AgentDefinition { bypass_flag: None, ..agent.clone() };
         let cmd = build_launch_command(&agent_no_bypass, "lattice_claude_999", false, true);
         assert_eq!(cmd, "claude");
     }
@@ -572,10 +536,6 @@ mod tests {
     #[test]
     fn title_instruction_matches_fallback_injection() {
         let session = "lattice_codex_123";
-        assert_eq!(
-            build_title_instruction(session),
-            build_title_injection(session)
-        );
+        assert_eq!(build_title_instruction(session), build_title_injection(session));
     }
-
 }
