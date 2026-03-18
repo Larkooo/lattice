@@ -63,7 +63,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         label: "Claude Code",
         binary: "claude",
         launch: "claude",
-        prompt_flag: Some("--append-system-prompt"),
+        prompt_flag: None,
         bypass_flag: Some("--dangerously-skip-permissions"),
     },
     KnownAgent {
@@ -499,19 +499,19 @@ mod tests {
             label: "Claude Code".to_owned(),
             binary: "claude".to_owned(),
             launch: "claude".to_owned(),
-            prompt_flag: Some("--append-system-prompt".to_owned()),
+            prompt_flag: None,
             bypass_flag: Some("--dangerously-skip-permissions".to_owned()),
         };
 
-        // bypass enabled, title enabled
+        // bypass enabled — no prompt flag, so only bypass appears
         let cmd = build_launch_command(&agent, "lattice_claude_999", true, true);
         assert!(cmd.contains("--dangerously-skip-permissions"));
-        assert!(cmd.contains("--append-system-prompt"));
-        assert!(cmd.contains("/tmp/lattice_lattice_claude_999.title"));
+        assert!(!cmd.contains("--append-system-prompt"));
 
         // bypass disabled
         let cmd = build_launch_command(&agent, "lattice_claude_999", true, false);
         assert!(!cmd.contains("--dangerously-skip-permissions"));
+        assert_eq!(cmd, "claude");
 
         // bypass enabled but agent has no flag
         let agent_no_bypass = AgentDefinition { bypass_flag: None, ..agent.clone() };
