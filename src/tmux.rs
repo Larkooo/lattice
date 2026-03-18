@@ -1,12 +1,8 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::process::Command;
 
 pub fn is_tmux_available() -> bool {
-    Command::new("tmux")
-        .arg("-V")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    Command::new("tmux").arg("-V").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,19 +61,9 @@ pub fn list_sessions() -> Result<Vec<Session>> {
         }
 
         let target = format!("{}:0.0", session.name);
-        if let Ok(preview) = run_tmux(&[
-            "capture-pane",
-            "-p",
-            "-t",
-            &target,
-            "-S",
-            "-30",
-        ]) {
-            let lines: Vec<String> = preview
-                .lines()
-                .map(str::trim_end)
-                .map(ToOwned::to_owned)
-                .collect();
+        if let Ok(preview) = run_tmux(&["capture-pane", "-p", "-t", &target, "-S", "-30"]) {
+            let lines: Vec<String> =
+                preview.lines().map(str::trim_end).map(ToOwned::to_owned).collect();
             let last = last_non_empty_line(&lines).unwrap_or("(no output yet)");
             session.last_line = last.to_owned();
             session.preview = lines;
@@ -106,13 +92,8 @@ pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Res
     }
 
     // Enable mouse mode so scrolling works inside the session.
-    let _ = Command::new("tmux")
-        .arg("set-option")
-        .arg("-t")
-        .arg(name)
-        .arg("mouse")
-        .arg("on")
-        .status();
+    let _ =
+        Command::new("tmux").arg("set-option").arg("-t").arg(name).arg("mouse").arg("on").status();
 
     // Step 2: Send the command as keystrokes into the session's shell.
     // This way the shell runs the command in its fully initialized environment,
@@ -220,13 +201,8 @@ pub fn create_split_session(name: &str, targets: &[String]) -> Result<()> {
     }
 
     // Enable mouse mode so scrolling works inside the session.
-    let _ = Command::new("tmux")
-        .arg("set-option")
-        .arg("-t")
-        .arg(name)
-        .arg("mouse")
-        .arg("on")
-        .status();
+    let _ =
+        Command::new("tmux").arg("set-option").arg("-t").arg(name).arg("mouse").arg("on").status();
 
     // Send the nested-attach command into the first pane.
     let target0 = format!("{name}:");
@@ -240,12 +216,7 @@ pub fn create_split_session(name: &str, targets: &[String]) -> Result<()> {
 
     // For each additional target, split and nested-attach.
     for t in &targets[1..] {
-        let _ = Command::new("tmux")
-            .arg("split-window")
-            .arg("-h")
-            .arg("-t")
-            .arg(name)
-            .status();
+        let _ = Command::new("tmux").arg("split-window").arg("-h").arg("-t").arg(name).status();
 
         let attach = format!("TMUX='' tmux attach-session -t '{}'", t);
         let _ = Command::new("tmux")
@@ -266,11 +237,7 @@ pub fn create_split_session(name: &str, targets: &[String]) -> Result<()> {
         .status();
 
     // Focus the first pane.
-    let _ = Command::new("tmux")
-        .arg("select-pane")
-        .arg("-t")
-        .arg(format!("{name}:.0"))
-        .status();
+    let _ = Command::new("tmux").arg("select-pane").arg("-t").arg(format!("{name}:.0")).status();
 
     Ok(())
 }
@@ -351,19 +318,11 @@ pub fn poll_session_previews() -> Vec<(String, Vec<String>)> {
         if name.is_empty() || !name.starts_with("lattice_") {
             continue;
         }
-        if let Ok(preview) = run_tmux(&[
-            "capture-pane",
-            "-p",
-            "-t",
-            &format!("{name}:0.0"),
-            "-S",
-            "-30",
-        ]) {
-            let lines: Vec<String> = preview
-                .lines()
-                .map(str::trim_end)
-                .map(ToOwned::to_owned)
-                .collect();
+        if let Ok(preview) =
+            run_tmux(&["capture-pane", "-p", "-t", &format!("{name}:0.0"), "-S", "-30"])
+        {
+            let lines: Vec<String> =
+                preview.lines().map(str::trim_end).map(ToOwned::to_owned).collect();
             out.push((name.to_owned(), lines));
         }
     }
@@ -383,11 +342,7 @@ fn run_tmux(args: &[&str]) -> Result<String> {
         Err(anyhow!(
             "tmux {} failed: {}",
             args.join(" "),
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
+            if stderr.is_empty() { "unknown error" } else { &stderr }
         ))
     }
 }
@@ -435,12 +390,7 @@ mod tests {
 
     #[test]
     fn last_non_empty_line_skips_blank_lines() {
-        let lines = vec![
-            "".to_owned(),
-            "  ".to_owned(),
-            "hello world ".to_owned(),
-            "".to_owned(),
-        ];
+        let lines = vec!["".to_owned(), "  ".to_owned(), "hello world ".to_owned(), "".to_owned()];
         assert_eq!(last_non_empty_line(&lines), Some("hello world"));
     }
 }

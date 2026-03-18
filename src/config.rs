@@ -138,10 +138,7 @@ impl Default for AppConfig {
 
 pub fn config_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-    PathBuf::from(home)
-        .join(".config")
-        .join("lattice")
-        .join("config.toml")
+    PathBuf::from(home).join(".config").join("lattice").join("config.toml")
 }
 
 pub fn load_config() -> AppConfig {
@@ -356,11 +353,7 @@ pub fn get_startup_commands(config: &AppConfig, working_dir: &str) -> Vec<String
 }
 
 pub fn is_bypass_enabled(config: &AppConfig, agent_id: &str) -> bool {
-    config
-        .permissions_bypass
-        .get(agent_id)
-        .copied()
-        .unwrap_or(false)
+    config.permissions_bypass.get(agent_id).copied().unwrap_or(false)
 }
 
 pub fn apply_cli_overrides(config: &mut AppConfig, refresh_seconds: Option<u64>) {
@@ -409,11 +402,7 @@ struct SessionActivity {
 /// resize (which changes the number of trailing blanks) doesn't cause
 /// spurious hash changes.
 fn hash_preview(lines: &[String]) -> u64 {
-    let end = lines
-        .iter()
-        .rposition(|l| !l.trim().is_empty())
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map(|i| i + 1).unwrap_or(0);
     let mut hasher = DefaultHasher::new();
     lines[..end].hash(&mut hasher);
     hasher.finish()

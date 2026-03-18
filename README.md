@@ -2,9 +2,8 @@
 
 `lattice` is a tmux-backed, tabbed interface for running and managing coding agents (`codex`, `claude`, etc.) on your own machine or VPS.
 
-The design is inspired by the `terminal.shop` terminal experience:
-- top tab bar
-- dashboard + per-instance tabs
+Design goals:
+- top tab bar with per-instance tabs
 - keyboard-first controls
 - clean boxed panels with modern color theme
 
