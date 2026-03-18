@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     sync::mpsc,
     time::{Duration, Instant},
@@ -9,6 +9,9 @@ use crate::{agents, config, git, pathnav, tmux};
 use agents::AgentDefinition;
 use pathnav::Browser;
 
+/// How long to wait before re-checking the PR state for a session.
+const PR_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
     pub agent: AgentDefinition,
@@ -16,6 +19,47 @@ pub struct AgentInstance {
     pub managed: bool,
     pub title_override: String,
     pub completed: bool,
+    pub pr_state: Option<git::PrState>,
+}
+
+/// Returns a sort key and display label for the category an instance belongs to.
+/// Categories in ascending order: Running -> Completed -> PR Open -> Merged.
+pub fn instance_category(instance: &AgentInstance) -> (u8, &'static str) {
+    match &instance.pr_state {
+        Some(git::PrState::Merged) => (3, "merged"),
+        Some(git::PrState::Open) => (2, "pr open"),
+        Some(git::PrState::Closed) => (1, "completed"),
+        None if instance.completed => (1, "completed"),
+        _ => (0, "running"),
+    }
+}
+
+/// Returns the project name for an instance: the basename of its working directory.
+/// When the instance is running inside a lattice worktree
+/// (`<root>/.lattice/worktrees/<id>`), the name is derived from the repo root
+/// rather than the numeric worktree ID.
+pub fn instance_project_name(instance: &AgentInstance) -> String {
+    let path = &instance.session.pane_current_path;
+    if path.is_empty() || path == "/" {
+        return String::new();
+    }
+
+    // Strip the worktree suffix so we use the parent repo name, not the ID.
+    let effective: &str = if let Some(idx) = path.find("/.lattice/worktrees/") {
+        &path[..idx]
+    } else {
+        path.as_str()
+    };
+
+    if let Ok(home) = env::var("HOME") {
+        if effective == home {
+            return "~".to_owned();
+        }
+    }
+    std::path::Path::new(effective)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +170,12 @@ pub struct App {
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
+    /// Cached PR state per session name, together with when it was last fetched.
+    pub pr_cache: HashMap<String, (Option<git::PrState>, Instant)>,
+    /// Sessions currently having their PR state fetched in a background thread.
+    pub pending_pr_checks: HashSet<String>,
+    pub pr_tx: mpsc::Sender<(String, Option<git::PrState>)>,
+    pub pr_rx: mpsc::Receiver<(String, Option<git::PrState>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +199,7 @@ impl App {
         let tmux_available = tmux::is_tmux_available();
         let refresh_interval = Duration::from_secs(cfg.refresh_interval.max(1));
         let (stop_tx, stop_rx) = mpsc::channel();
+        let (pr_tx, pr_rx) = mpsc::channel();
 
         Self {
             available_agents: Vec::new(),
@@ -177,6 +228,10 @@ impl App {
             stopping_sessions: HashSet::new(),
             stop_tx,
             stop_rx,
+            pr_cache: HashMap::new(),
+            pending_pr_checks: HashSet::new(),
+            pr_tx,
+            pr_rx,
         }
     }
 
@@ -240,11 +295,50 @@ impl App {
                         let managed = agents::managed_session_agent_id(&session.name).is_some();
                         let title_override = agents::read_title_file(&session.name);
                         let completed = agents::is_done(&session.name);
-                        Some(AgentInstance { agent, session, managed, title_override, completed })
+
+                        // Use cached PR state; kick off a background check if
+                        // the cache is missing or stale and no check is in flight.
+                        let pr_state = self
+                            .pr_cache
+                            .get(&session.name)
+                            .map(|(state, _)| state.clone())
+                            .unwrap_or(None);
+
+                        if !session.pane_current_path.is_empty()
+                            && !self.pending_pr_checks.contains(&session.name)
+                            && self
+                                .pr_cache
+                                .get(&session.name)
+                                .map(|(_, checked_at)| checked_at.elapsed() >= PR_RECHECK_INTERVAL)
+                                .unwrap_or(true)
+                        {
+                            self.pending_pr_checks.insert(session.name.clone());
+                            let tx = self.pr_tx.clone();
+                            let name = session.name.clone();
+                            let path = session.pane_current_path.clone();
+                            std::thread::spawn(move || {
+                                let state = git::gh_pr_state(std::path::Path::new(&path));
+                                let _ = tx.send((name, state));
+                            });
+                        }
+
+                        Some(AgentInstance {
+                            agent,
+                            session,
+                            managed,
+                            title_override,
+                            completed,
+                            pr_state,
+                        })
                     })
                     .collect();
 
-                self.instances.sort_by(|a, b| a.session.name.cmp(&b.session.name));
+                self.instances.sort_by(|a, b| {
+                    instance_project_name(a)
+                        .cmp(&instance_project_name(b))
+                        .then(instance_category(a).0.cmp(&instance_category(b).0))
+                        .then(a.session.name.cmp(&b.session.name))
+                });
                 self.clamp_selection();
 
                 let completed_count = self.instances.iter().filter(|i| i.completed).count();
@@ -528,6 +622,28 @@ impl App {
             self.status_line = result.message;
             // Force a refresh so the stopped instance disappears from the list
             self.last_refresh = Instant::now() - self.refresh_interval;
+        }
+    }
+
+    pub fn drain_pr_results(&mut self) {
+        let mut resort = false;
+        while let Ok((name, state)) = self.pr_rx.try_recv() {
+            self.pending_pr_checks.remove(&name);
+            self.pr_cache.insert(name.clone(), (state.clone(), Instant::now()));
+            if let Some(inst) = self.instances.iter_mut().find(|i| i.session.name == name) {
+                if inst.pr_state != state {
+                    inst.pr_state = state;
+                    resort = true;
+                }
+            }
+        }
+        if resort {
+            self.instances.sort_by(|a, b| {
+                instance_project_name(a)
+                    .cmp(&instance_project_name(b))
+                    .then(instance_category(a).0.cmp(&instance_category(b).0))
+                    .then(a.session.name.cmp(&b.session.name))
+            });
         }
     }
 

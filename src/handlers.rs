@@ -322,13 +322,38 @@ pub fn handle_main_key(
         KeyCode::Char('x') => app.kill_selected_instance(),
         KeyCode::Char('p') => {
             if let Some(instance) = app.active_instance_ref().cloned() {
-                if instance.completed {
-                    match tmux::send_keys(&instance.session.name, &agents::build_pr_prompt()) {
-                        Ok(()) => app.status_line = "PR prompt sent".to_owned(),
-                        Err(err) => app.status_line = format!("Failed to send PR prompt: {err}"),
+                match &instance.pr_state {
+                    Some(git::PrState::Merged) => {
+                        app.status_line =
+                            "PR already merged \u{2014} press x to stop instance".to_owned();
                     }
-                } else {
-                    app.status_line = "Instance not completed yet".to_owned();
+                    Some(git::PrState::Open) => {
+                        match tmux::send_keys(
+                            &instance.session.name,
+                            &agents::build_merge_pr_prompt(),
+                        ) {
+                            Ok(()) => {
+                                app.status_line =
+                                    "Merge prompt sent \u{2014} instance ready to stop (press x)"
+                                        .to_owned()
+                            }
+                            Err(err) => {
+                                app.status_line = format!("Failed to send merge prompt: {err}")
+                            }
+                        }
+                    }
+                    _ => {
+                        match tmux::send_keys(&instance.session.name, &agents::build_pr_prompt()) {
+                            Ok(()) => {
+                                app.status_line =
+                                    "PR prompt sent \u{2014} press p again once PR is open"
+                                        .to_owned()
+                            }
+                            Err(err) => {
+                                app.status_line = format!("Failed to send PR prompt: {err}")
+                            }
+                        }
+                    }
                 }
             } else {
                 app.status_line = "Select an instance first".to_owned();

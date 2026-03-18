@@ -60,14 +60,15 @@ fn run(cfg: config::AppConfig) -> Result<()> {
 
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     while !app.should_quit {
-        // Check for completed background stop operations
+        // Check for completed background operations
         app.drain_stop_results();
+        app.drain_pr_results();
 
         terminal.draw(|frame| draw_ui(frame, app))?;
 
-        // Poll more frequently when sessions are being stopped so the UI
-        // updates promptly when the background work finishes.
-        let max_wait = if app.stopping_sessions.is_empty() {
+        // Poll more frequently when background work is in flight so the UI
+        // updates promptly when it finishes.
+        let max_wait = if app.stopping_sessions.is_empty() && app.pending_pr_checks.is_empty() {
             Duration::from_millis(250)
         } else {
             Duration::from_millis(100)

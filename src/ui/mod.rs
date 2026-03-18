@@ -9,8 +9,8 @@ use ratatui::{
 
 use crate::{
     agents,
-    app::{App, AppScreen, SpawnStep},
-    config,
+    app::{instance_category, instance_project_name, App, AppScreen, SpawnStep},
+    config, git,
     pathnav::EntryKind,
 };
 use settings::{draw_permissions_view, draw_settings_view, draw_startup_cmds_view};
@@ -128,8 +128,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let w = area.width as usize;
 
     // Cell 0 = "lattice" brand (maps to dashboard / tab 0)
-    // Cell 1 = "s sessions" shortcut
-    // Cell 2+ = instance tabs
+    // Cell 1+ = instance tabs
     struct TabCell {
         label: String,
         is_selected: bool,
@@ -149,11 +148,6 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         is_selected: app.selected_tab == 0,
         is_in_split: false,
     });
-    cells.push(TabCell {
-        label: "sessions".to_owned(),
-        is_selected: app.selected_tab == 0,
-        is_in_split: false,
-    });
     for (i, instance) in app.instances.iter().enumerate() {
         let title = agents::derive_display_title(
             &instance.session.name,
@@ -164,7 +158,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         let display = truncate(&title, 14);
         let in_split = split_names.contains(&instance.session.name);
         cells.push(TabCell {
-            label: format!("{} {}", instance.agent.id, display),
+            label: display,
             is_selected: app.selected_tab == i + 1,
             is_in_split: in_split,
         });
@@ -259,16 +253,8 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
-    let has_managed = app.instances.iter().any(|i| i.managed);
-    let has_external = app.instances.iter().any(|i| !i.managed);
 
     let mut lines: Vec<Line> = Vec::new();
-
-    if has_managed {
-        lines.push(Line::from(Span::styled("~ managed ~", Style::default().fg(t.accent))));
-    } else if !app.instances.is_empty() {
-        lines.push(Line::from(Span::styled("~ sessions ~", Style::default().fg(t.accent))));
-    }
 
     let total = app.dashboard_row_count();
     let capacity = area.height.saturating_sub(4) as usize;
@@ -278,18 +264,29 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled("...", Style::default().fg(t.muted))));
     }
 
-    let mut shown_external_header = false;
+    // Track which project header was last rendered so we insert one on change.
+    let prev_project: Option<String> =
+        if start > 0 { app.instances.get(start - 1).map(instance_project_name) } else { None };
+    let mut last_project = prev_project;
 
     for index in start..end {
         let selected = index == app.selected_row;
 
         if index < app.instances.len() {
             let instance = &app.instances[index];
+            let project = instance_project_name(instance);
 
-            if !instance.managed && !shown_external_header && has_managed && has_external {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled("~ external ~", Style::default().fg(t.accent))));
-                shown_external_header = true;
+            if last_project.as_deref() != Some(&project) {
+                if last_project.is_some() {
+                    lines.push(Line::from(""));
+                }
+                let header = if project.is_empty() {
+                    "~ unknown ~".to_owned()
+                } else {
+                    format!("~ {project} ~")
+                };
+                lines.push(Line::from(Span::styled(header, Style::default().fg(t.accent))));
+                last_project = Some(project);
             }
 
             let title = agents::derive_display_title(
@@ -303,6 +300,22 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
             let (label, style) = if is_stopping {
                 let label = format!("\u{29D7} {} stopping\u{2026}", truncate(&title, 18));
+                let style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.yellow)
+                };
+                (label, style)
+            } else if instance.pr_state == Some(git::PrState::Merged) {
+                let label = format!("\u{21B3} {}", truncate(&title, 26));
+                let style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.accent)
+                };
+                (label, style)
+            } else if instance.pr_state == Some(git::PrState::Open) {
+                let label = format!("\u{2197} {}", truncate(&title, 26));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -483,7 +496,11 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         l
     } else if let Some(instance) = app.selected_instance() {
-        let (state_label, state_style) = if instance.completed {
+        let (state_label, state_style) = if instance.pr_state == Some(git::PrState::Merged) {
+            ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+        } else if instance.pr_state == Some(git::PrState::Open) {
+            ("PR open \u{2014} press p to merge", Style::default().fg(t.yellow))
+        } else if instance.completed {
             ("completed", Style::default().fg(t.green))
         } else if instance.session.attached {
             ("attached", Style::default().fg(t.green))
@@ -583,6 +600,10 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let (state_label, state_style) = if is_stopping {
         ("stopping\u{2026}", Style::default().fg(t.yellow))
+    } else if instance.pr_state == Some(git::PrState::Merged) {
+        ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+    } else if instance.pr_state == Some(git::PrState::Open) {
+        ("PR open \u{2014} press p to merge", Style::default().fg(t.yellow))
     } else if instance.completed {
         ("completed", Style::default().fg(t.green))
     } else if instance.session.attached {
