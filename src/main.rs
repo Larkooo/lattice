@@ -2090,8 +2090,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let w = area.width as usize;
 
     // Cell 0 = "lattice" brand (maps to dashboard / tab 0)
-    // Cell 1 = "s sessions" shortcut
-    // Cell 2+ = instance tabs
+    // Cell 1+ = instance tabs
     struct TabCell {
         label: String,
         is_selected: bool,
@@ -2111,11 +2110,6 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         is_selected: app.selected_tab == 0,
         is_in_split: false,
     });
-    cells.push(TabCell {
-        label: "sessions".to_owned(),
-        is_selected: app.selected_tab == 0,
-        is_in_split: false,
-    });
     for (i, instance) in app.instances.iter().enumerate() {
         let title = agents::derive_display_title(
             &instance.session.name,
@@ -2126,7 +2120,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         let display = truncate(&title, 14);
         let in_split = split_names.contains(&instance.session.name);
         cells.push(TabCell {
-            label: format!("{} {}", instance.agent.id, display),
+            label: display,
             is_selected: app.selected_tab == i + 1,
             is_in_split: in_split,
         });
