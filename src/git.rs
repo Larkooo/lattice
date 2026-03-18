@@ -10,31 +10,68 @@ pub enum PrState {
     Closed,
 }
 
-/// Query the GitHub CLI for the state of the PR associated with the current
-/// branch in `working_dir`. Returns `None` if `gh` is unavailable, there is
-/// no PR for this branch, or the call fails.
-pub fn gh_pr_state(working_dir: &Path) -> Option<PrState> {
+/// Query the GitHub CLI for PR info (state + number) associated with the
+/// current branch in `working_dir`. Returns `(None, None)` if `gh` is
+/// unavailable, there is no PR for this branch, or the call fails.
+pub fn gh_pr_info(working_dir: &Path) -> (Option<PrState>, Option<u32>) {
     if working_dir.as_os_str().is_empty() {
-        return None;
+        return (None, None);
     }
     let output = Command::new("gh")
-        .args(["pr", "view", "--json", "state", "-q", ".state"])
+        .args(["pr", "view", "--json", "state,number", "-q", "[.state, .number] | @tsv"])
         .current_dir(working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
-        .ok()?;
+        .ok();
 
+    let Some(output) = output else { return (None, None) };
     if !output.status.success() {
-        return None;
+        return (None, None);
     }
 
-    match output.stdout.trim_ascii() {
-        b"OPEN" => Some(PrState::Open),
-        b"MERGED" => Some(PrState::Merged),
-        b"CLOSED" => Some(PrState::Closed),
+    let text = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = text.trim().split('\t').collect();
+    let state = match parts.first().map(|s| s.trim()) {
+        Some("OPEN") => Some(PrState::Open),
+        Some("MERGED") => Some(PrState::Merged),
+        Some("CLOSED") => Some(PrState::Closed),
         _ => None,
+    };
+    let number = parts.get(1).and_then(|s| s.trim().parse::<u32>().ok());
+    (state, number)
+}
+
+/// Get the current git branch name in `working_dir`.
+/// Returns an empty string if not in a git repo or on a detached HEAD.
+pub fn current_branch(working_dir: &Path) -> String {
+    if working_dir.as_os_str().is_empty() {
+        return String::new();
     }
+    let output = Command::new("git")
+        .args(["-C", &working_dir.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok();
+    match output {
+        Some(o) if o.status.success() => {
+            let branch = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+            if branch == "HEAD" { String::new() } else { branch }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Open the PR associated with the current branch in the default browser.
+/// Runs `gh pr view --web` in the given working directory.
+pub fn gh_pr_open_in_browser(working_dir: &Path) {
+    let _ = Command::new("gh")
+        .args(["pr", "view", "--web"])
+        .current_dir(working_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// Check if `path` is inside a git repository.

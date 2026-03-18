@@ -20,6 +20,8 @@ pub struct AgentInstance {
     pub title_override: String,
     pub completed: bool,
     pub pr_state: Option<git::PrState>,
+    pub pr_number: Option<u32>,
+    pub branch: String,
 }
 
 /// Returns a sort key and display label for the category an instance belongs to.
@@ -170,12 +172,12 @@ pub struct App {
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
-    /// Cached PR state per session name, together with when it was last fetched.
-    pub pr_cache: HashMap<String, (Option<git::PrState>, Instant)>,
+    /// Cached PR info per session name, together with when it was last fetched.
+    pub pr_cache: HashMap<String, (Option<git::PrState>, Option<u32>, Instant)>,
     /// Sessions currently having their PR state fetched in a background thread.
     pub pending_pr_checks: HashSet<String>,
-    pub pr_tx: mpsc::Sender<(String, Option<git::PrState>)>,
-    pub pr_rx: mpsc::Receiver<(String, Option<git::PrState>)>,
+    pub pr_tx: mpsc::Sender<(String, Option<git::PrState>, Option<u32>)>,
+    pub pr_rx: mpsc::Receiver<(String, Option<git::PrState>, Option<u32>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,18 +300,20 @@ impl App {
 
                         // Use cached PR state; kick off a background check if
                         // the cache is missing or stale and no check is in flight.
-                        let pr_state = self
+                        let (pr_state, pr_number) = self
                             .pr_cache
                             .get(&session.name)
-                            .map(|(state, _)| state.clone())
-                            .unwrap_or(None);
+                            .map(|(state, num, _)| (state.clone(), *num))
+                            .unwrap_or((None, None));
 
                         if !session.pane_current_path.is_empty()
                             && !self.pending_pr_checks.contains(&session.name)
                             && self
                                 .pr_cache
                                 .get(&session.name)
-                                .map(|(_, checked_at)| checked_at.elapsed() >= PR_RECHECK_INTERVAL)
+                                .map(|(_, _, checked_at)| {
+                                    checked_at.elapsed() >= PR_RECHECK_INTERVAL
+                                })
                                 .unwrap_or(true)
                         {
                             self.pending_pr_checks.insert(session.name.clone());
@@ -317,10 +321,20 @@ impl App {
                             let name = session.name.clone();
                             let path = session.pane_current_path.clone();
                             std::thread::spawn(move || {
-                                let state = git::gh_pr_state(std::path::Path::new(&path));
-                                let _ = tx.send((name, state));
+                                let (state, number) =
+                                    git::gh_pr_info(std::path::Path::new(&path));
+                                let _ = tx.send((name, state, number));
                             });
                         }
+
+                        // Get the git branch (cheap local call).
+                        let branch = if !session.pane_current_path.is_empty() {
+                            git::current_branch(std::path::Path::new(
+                                &session.pane_current_path,
+                            ))
+                        } else {
+                            String::new()
+                        };
 
                         Some(AgentInstance {
                             agent,
@@ -329,6 +343,8 @@ impl App {
                             title_override,
                             completed,
                             pr_state,
+                            pr_number,
+                            branch,
                         })
                     })
                     .collect();
@@ -627,14 +643,15 @@ impl App {
 
     pub fn drain_pr_results(&mut self) {
         let mut resort = false;
-        while let Ok((name, state)) = self.pr_rx.try_recv() {
+        while let Ok((name, state, number)) = self.pr_rx.try_recv() {
             self.pending_pr_checks.remove(&name);
-            self.pr_cache.insert(name.clone(), (state.clone(), Instant::now()));
+            self.pr_cache.insert(name.clone(), (state.clone(), number, Instant::now()));
             if let Some(inst) = self.instances.iter_mut().find(|i| i.session.name == name) {
                 if inst.pr_state != state {
                     inst.pr_state = state;
                     resort = true;
                 }
+                inst.pr_number = number;
             }
         }
         if resort {

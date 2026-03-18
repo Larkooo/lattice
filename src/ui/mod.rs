@@ -7,6 +7,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::{
     agents,
     app::{instance_project_name, App, AppScreen, SpawnStep},
@@ -14,6 +16,30 @@ use crate::{
     pathnav::EntryKind,
 };
 use settings::{draw_permissions_view, draw_settings_view, draw_startup_cmds_view};
+
+/// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
+fn format_uptime(created_epoch: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now <= created_epoch {
+        return "just now".to_owned();
+    }
+    let secs = now - created_epoch;
+    let mins = secs / 60;
+    let hours = mins / 60;
+    let days = hours / 24;
+    if days > 0 {
+        format!("{}d {}h", days, hours % 24)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins % 60)
+    } else if mins > 0 {
+        format!("{}m", mins)
+    } else {
+        format!("{}s", secs)
+    }
+}
 
 pub fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &App) {
     let t = app.theme;
@@ -496,60 +522,69 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         l
     } else if let Some(instance) = app.selected_instance() {
+        let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
         let (state_label, state_style) = if instance.pr_state == Some(git::PrState::Merged) {
-            ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+            (format!("merged{pr_tag}"), Style::default().fg(t.accent))
         } else if instance.pr_state == Some(git::PrState::Open) {
-            ("PR open \u{2014} press p to merge", Style::default().fg(t.yellow))
+            (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
         } else if instance.completed {
-            ("completed", Style::default().fg(t.green))
+            ("completed".to_owned(), Style::default().fg(t.green))
         } else if instance.session.attached {
-            ("attached", Style::default().fg(t.green))
+            ("attached".to_owned(), Style::default().fg(t.green))
         } else {
-            ("idle", Style::default().fg(t.muted))
+            ("idle".to_owned(), Style::default().fg(t.muted))
         };
+
+        let title = agents::derive_display_title(
+            &instance.session.name,
+            &instance.session.pane_title,
+            &instance.session.pane_current_path,
+            &instance.title_override,
+        );
 
         let mut lines = vec![
             Line::from(Span::styled(
-                instance.agent.label.clone(),
+                title,
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             )),
+            Line::from(Span::styled(
+                instance.agent.label.clone(),
+                Style::default().fg(t.muted),
+            )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("session  ", Style::default().fg(t.muted)),
-                Span::styled(instance.session.name.clone(), Style::default().fg(t.text)),
-            ]),
-            Line::from(vec![
-                Span::styled("created  ", Style::default().fg(t.muted)),
-                Span::styled(instance.session.created.clone(), Style::default().fg(t.text)),
-            ]),
             Line::from(vec![
                 Span::styled("state    ", Style::default().fg(t.muted)),
                 Span::styled(state_label, state_style),
             ]),
-            Line::from(vec![
-                Span::styled("kind     ", Style::default().fg(t.muted)),
-                Span::styled(
-                    if instance.managed { "managed" } else { "external" },
-                    Style::default().fg(t.text),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("command  ", Style::default().fg(t.muted)),
-                Span::styled(instance.session.current_command.clone(), Style::default().fg(t.text)),
-            ]),
-            Line::from(vec![
-                Span::styled("path     ", Style::default().fg(t.muted)),
-                Span::styled(
-                    if instance.session.pane_current_path.is_empty() {
-                        "\u{2014}".to_owned()
-                    } else {
-                        instance.session.pane_current_path.clone()
-                    },
-                    Style::default().fg(t.text),
-                ),
-            ]),
-            Line::from(""),
         ];
+
+        if !instance.branch.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("branch   ", Style::default().fg(t.muted)),
+                Span::styled(instance.branch.clone(), Style::default().fg(t.text)),
+            ]));
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled("uptime   ", Style::default().fg(t.muted)),
+            Span::styled(
+                format_uptime(instance.session.created_epoch),
+                Style::default().fg(t.text),
+            ),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("path     ", Style::default().fg(t.muted)),
+            Span::styled(
+                if instance.session.pane_current_path.is_empty() {
+                    "\u{2014}".to_owned()
+                } else {
+                    instance.session.pane_current_path.clone()
+                },
+                Style::default().fg(t.text),
+            ),
+        ]));
+        lines.push(Line::from(""));
 
         let preview_space = area.height.saturating_sub(lines.len() as u16 + 1) as usize;
         let preview_take = preview_space.max(4);
@@ -598,59 +633,71 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let is_stopping = app.stopping_sessions.contains(&instance.session.name);
 
+    let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
     let (state_label, state_style) = if is_stopping {
-        ("stopping\u{2026}", Style::default().fg(t.yellow))
+        ("stopping\u{2026}".to_owned(), Style::default().fg(t.yellow))
     } else if instance.pr_state == Some(git::PrState::Merged) {
-        ("merged \u{2014} ready to stop", Style::default().fg(t.accent))
+        (format!("merged{pr_tag}"), Style::default().fg(t.accent))
     } else if instance.pr_state == Some(git::PrState::Open) {
-        ("PR open \u{2014} press p to merge", Style::default().fg(t.yellow))
+        (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
     } else if instance.completed {
-        ("completed", Style::default().fg(t.green))
+        ("completed".to_owned(), Style::default().fg(t.green))
     } else if instance.session.attached {
-        ("attached", Style::default().fg(t.green))
+        ("attached".to_owned(), Style::default().fg(t.green))
     } else {
-        ("idle", Style::default().fg(t.muted))
+        ("idle".to_owned(), Style::default().fg(t.muted))
     };
+
+    let title = agents::derive_display_title(
+        &instance.session.name,
+        &instance.session.pane_title,
+        &instance.session.pane_current_path,
+        &instance.title_override,
+    );
 
     let mut lines = vec![
         Line::from(Span::styled(
-            instance.agent.label.clone(),
+            title,
             Style::default().fg(t.text).add_modifier(Modifier::BOLD),
         )),
+        Line::from(Span::styled(
+            instance.agent.label.clone(),
+            Style::default().fg(t.muted),
+        )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("session  ", Style::default().fg(t.muted)),
-            Span::styled(instance.session.name.clone(), Style::default().fg(t.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("created  ", Style::default().fg(t.muted)),
-            Span::styled(instance.session.created.clone(), Style::default().fg(t.text)),
-        ]),
         Line::from(vec![
             Span::styled("state    ", Style::default().fg(t.muted)),
             Span::styled(state_label, state_style),
         ]),
-        Line::from(vec![
-            Span::styled("windows  ", Style::default().fg(t.muted)),
-            Span::styled(format!("{}", instance.session.windows), Style::default().fg(t.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("command  ", Style::default().fg(t.muted)),
-            Span::styled(instance.session.current_command.clone(), Style::default().fg(t.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("path     ", Style::default().fg(t.muted)),
-            Span::styled(
-                if instance.session.pane_current_path.is_empty() {
-                    "\u{2014}".to_owned()
-                } else {
-                    instance.session.pane_current_path.clone()
-                },
-                Style::default().fg(t.text),
-            ),
-        ]),
-        Line::from(""),
     ];
+
+    if !instance.branch.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("branch   ", Style::default().fg(t.muted)),
+            Span::styled(instance.branch.clone(), Style::default().fg(t.text)),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("uptime   ", Style::default().fg(t.muted)),
+        Span::styled(
+            format_uptime(instance.session.created_epoch),
+            Style::default().fg(t.text),
+        ),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("path     ", Style::default().fg(t.muted)),
+        Span::styled(
+            if instance.session.pane_current_path.is_empty() {
+                "\u{2014}".to_owned()
+            } else {
+                instance.session.pane_current_path.clone()
+            },
+            Style::default().fg(t.text),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     let preview_take = area.height.saturating_sub(lines.len() as u16 + 1) as usize;
     let preview: Vec<String> = instance
@@ -847,10 +894,15 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         if active.is_some() {
             s.extend(kb("x", "stop"));
 
-            // Dynamic PR keybind — hide when already merged (nothing to do)
+            // Dynamic PR keybinds
             match active.and_then(|i| i.pr_state.as_ref()) {
-                Some(git::PrState::Merged) => {}
-                Some(git::PrState::Open) => s.extend(kb("p", "merge pr")),
+                Some(git::PrState::Merged) => {
+                    s.extend(kb("o", "view pr"));
+                }
+                Some(git::PrState::Open) => {
+                    s.extend(kb("p", "merge pr"));
+                    s.extend(kb("o", "view pr"));
+                }
                 _ => s.extend(kb("p", "open pr")),
             }
         }

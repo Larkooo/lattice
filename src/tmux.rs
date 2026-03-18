@@ -10,7 +10,8 @@ pub struct Session {
     pub name: String,
     pub attached: bool,
     pub windows: u32,
-    pub created: String,
+    /// Unix epoch timestamp when the session was created.
+    pub created_epoch: u64,
     pub current_command: String,
     pub pane_current_path: String,
     pub pane_title: String,
@@ -22,7 +23,7 @@ pub fn list_sessions() -> Result<Vec<Session>> {
     let raw = match run_tmux(&[
         "list-sessions",
         "-F",
-        "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_created_string}",
+        "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_created}",
     ]) {
         Ok(out) => out,
         Err(err) if is_no_server_error(&err.to_string()) => return Ok(Vec::new()),
@@ -287,12 +288,13 @@ fn parse_session_list(raw: &str) -> Result<Vec<Session>> {
         let windows = parts[2]
             .parse::<u32>()
             .with_context(|| format!("invalid window count in line: {line}"))?;
+        let created_epoch = parts[3].parse::<u64>().unwrap_or(0);
 
         sessions.push(Session {
             name: parts[0].to_owned(),
             attached: parts[1] == "1",
             windows,
-            created: parts[3].to_owned(),
+            created_epoch,
             current_command: "unknown".to_owned(),
             pane_current_path: String::new(),
             pane_title: String::new(),
@@ -371,7 +373,7 @@ mod tests {
 
     #[test]
     fn parse_session_list_handles_valid_rows() {
-        let raw = "codex\t0\t1\tTue Feb 18 12:00:00 2026\nclaude\t1\t2\tTue Feb 18 13:00:00 2026\n";
+        let raw = "codex\t0\t1\t1771153200\nclaude\t1\t2\t1771156800\n";
         let parsed = parse_session_list(raw).expect("should parse");
 
         assert_eq!(parsed.len(), 2);
