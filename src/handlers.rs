@@ -359,6 +359,26 @@ pub fn handle_main_key(
                 app.status_line = "Select an instance first".to_owned();
             }
         }
+        KeyCode::Char('o') => {
+            if let Some(instance) = app.active_instance_ref() {
+                match &instance.pr_state {
+                    Some(git::PrState::Open) | Some(git::PrState::Merged) => {
+                        let dir = instance.session.pane_current_path.clone();
+                        if !dir.is_empty() {
+                            git::gh_pr_open_in_browser(std::path::Path::new(&dir));
+                            app.status_line = "Opening PR in browser\u{2026}".to_owned();
+                        } else {
+                            app.status_line = "No working directory for this instance".to_owned();
+                        }
+                    }
+                    _ => {
+                        app.status_line = "No PR to open \u{2014} press p to create one".to_owned();
+                    }
+                }
+            } else {
+                app.status_line = "Select an instance first".to_owned();
+            }
+        }
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('0' as usize);
