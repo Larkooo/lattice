@@ -27,6 +27,8 @@ Design goals:
   - choose exact working directory with `Use <path>`
 - Shows an agent dashboard list + summary panel
 - Shows each running instance as its own top tab
+- Tracks GitHub PR state and CI checks for agent branches
+- Marks instances with failing PR checks in red and exposes a fix action
 - Attaches into an instance (`enter`)
 - Stops an instance (`x`)
 
@@ -90,6 +92,9 @@ ssh agentops@your-vps
 - `enter` on an instance: attach to selected/current instance
 - `left/right` (or `h/l`, `tab`): switch tabs
 - `x`: stop selected/current instance
+- `p`: create or merge the selected instance PR
+- `o`: open the selected instance PR in the browser
+- `f`: ask the selected instance to fix failing PR checks
 - `d`: go to dashboard tab
 - `r`: refresh
 - `q`: quit

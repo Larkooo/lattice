@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,36 +11,147 @@ pub enum PrState {
     Closed,
 }
 
-/// Query the GitHub CLI for PR info (state + number) associated with the
-/// current branch in `working_dir`. Returns `(None, None)` if `gh` is
-/// unavailable, there is no PR for this branch, or the call fails.
-pub fn gh_pr_info(working_dir: &Path) -> (Option<PrState>, Option<u32>) {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PrChecksSummary {
+    pub failed: Vec<String>,
+    pub pending: usize,
+    pub passed: usize,
+    pub skipped: usize,
+    pub cancelled: usize,
+}
+
+impl PrChecksSummary {
+    pub fn has_failures(&self) -> bool {
+        !self.failed.is_empty()
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.pending > 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.failed.is_empty()
+            && self.pending == 0
+            && self.passed == 0
+            && self.skipped == 0
+            && self.cancelled == 0
+    }
+
+    pub fn short_label(&self) -> Option<String> {
+        if self.has_failures() {
+            Some(format!(
+                "{} failing{}",
+                self.failed.len(),
+                if self.has_pending() {
+                    format!(" • {} pending", self.pending)
+                } else {
+                    String::new()
+                }
+            ))
+        } else if self.has_pending() {
+            Some(format!("{} pending", self.pending))
+        } else if self.passed > 0 {
+            Some(format!("{} passing", self.passed))
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrStatus {
+    pub state: Option<PrState>,
+    pub number: Option<u32>,
+    pub checks: Option<PrChecksSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPrInfo {
+    state: String,
+    number: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPrCheck {
+    bucket: String,
+    name: String,
+    workflow: Option<String>,
+}
+
+/// Query the GitHub CLI for PR info associated with the current branch in
+/// `working_dir`. Returns empty fields if `gh` is unavailable, there is no PR
+/// for this branch, or the call fails.
+pub fn gh_pr_status(working_dir: &Path) -> PrStatus {
     if working_dir.as_os_str().is_empty() {
-        return (None, None);
+        return PrStatus { state: None, number: None, checks: None };
     }
     let output = Command::new("gh")
-        .args(["pr", "view", "--json", "state,number", "-q", "[.state, .number] | @tsv"])
+        .args(["pr", "view", "--json", "state,number"])
         .current_dir(working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
         .ok();
 
-    let Some(output) = output else { return (None, None) };
+    let Some(output) = output else {
+        return PrStatus { state: None, number: None, checks: None };
+    };
     if !output.status.success() {
-        return (None, None);
+        return PrStatus { state: None, number: None, checks: None };
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = text.trim().split('\t').collect();
-    let state = match parts.first().map(|s| s.trim()) {
-        Some("OPEN") => Some(PrState::Open),
-        Some("MERGED") => Some(PrState::Merged),
-        Some("CLOSED") => Some(PrState::Closed),
+    let info: GhPrInfo = match serde_json::from_slice(&output.stdout) {
+        Ok(info) => info,
+        Err(_) => {
+            return PrStatus { state: None, number: None, checks: None };
+        }
+    };
+    let state = match info.state.trim() {
+        "OPEN" => Some(PrState::Open),
+        "MERGED" => Some(PrState::Merged),
+        "CLOSED" => Some(PrState::Closed),
         _ => None,
     };
-    let number = parts.get(1).and_then(|s| s.trim().parse::<u32>().ok());
-    (state, number)
+    let checks = if state == Some(PrState::Open) { gh_pr_checks(working_dir) } else { None };
+
+    PrStatus { state, number: Some(info.number), checks }
+}
+
+pub fn gh_pr_checks(working_dir: &Path) -> Option<PrChecksSummary> {
+    let output = Command::new("gh")
+        .args(["pr", "checks", "--json", "bucket,name,workflow"])
+        .current_dir(working_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    let code = output.status.code();
+    if !output.status.success() && code != Some(8) {
+        return None;
+    }
+
+    let checks: Vec<GhPrCheck> = serde_json::from_slice(&output.stdout).ok()?;
+    let mut summary = PrChecksSummary::default();
+    for check in checks {
+        let label = match check.workflow.as_deref() {
+            Some(workflow) if !workflow.is_empty() && workflow != check.name => {
+                format!("{workflow}: {}", check.name)
+            }
+            _ => check.name,
+        };
+
+        match check.bucket.as_str() {
+            "pass" => summary.passed += 1,
+            "fail" => summary.failed.push(label),
+            "pending" => summary.pending += 1,
+            "skipping" => summary.skipped += 1,
+            "cancel" => summary.cancelled += 1,
+            _ => {}
+        }
+    }
+
+    Some(summary)
 }
 
 /// Get the current git branch name in `working_dir`.
@@ -57,7 +169,11 @@ pub fn current_branch(working_dir: &Path) -> String {
     match output {
         Some(o) if o.status.success() => {
             let branch = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-            if branch == "HEAD" { String::new() } else { branch }
+            if branch == "HEAD" {
+                String::new()
+            } else {
+                branch
+            }
         }
         _ => String::new(),
     }

@@ -21,17 +21,19 @@ pub struct AgentInstance {
     pub completed: bool,
     pub pr_state: Option<git::PrState>,
     pub pr_number: Option<u32>,
+    pub pr_checks: Option<git::PrChecksSummary>,
     pub branch: String,
 }
 
 /// Returns a sort key and display label for the category an instance belongs to.
-/// Categories in ascending order: Running -> Completed -> PR Open -> Merged.
+/// Categories in ascending order: Running -> Completed -> PR Open -> CI Failed -> Merged.
 pub fn instance_category(instance: &AgentInstance) -> (u8, &'static str) {
-    match &instance.pr_state {
-        Some(git::PrState::Merged) => (3, "merged"),
-        Some(git::PrState::Open) => (2, "pr open"),
-        Some(git::PrState::Closed) => (1, "completed"),
-        None if instance.completed => (1, "completed"),
+    match (&instance.pr_state, instance.pr_checks.as_ref()) {
+        (Some(git::PrState::Merged), _) => (4, "merged"),
+        (Some(git::PrState::Open), Some(checks)) if checks.has_failures() => (3, "ci failed"),
+        (Some(git::PrState::Open), _) => (2, "pr open"),
+        (Some(git::PrState::Closed), _) => (1, "completed"),
+        (None, _) if instance.completed => (1, "completed"),
         _ => (0, "running"),
     }
 }
@@ -116,6 +118,7 @@ pub struct UiTheme {
     pub highlight_bg: ratatui::style::Color,
     pub yellow: ratatui::style::Color,
     pub green: ratatui::style::Color,
+    pub red: ratatui::style::Color,
 }
 
 impl UiTheme {
@@ -136,6 +139,7 @@ impl UiTheme {
             highlight_bg: c(tc.highlight, Color::Rgb(191, 111, 74)),
             yellow: c(tc.yellow, Color::Rgb(228, 175, 105)),
             green: c(tc.green, Color::Rgb(169, 195, 140)),
+            red: c(tc.red, Color::Rgb(212, 96, 87)),
         }
     }
 }
@@ -173,11 +177,11 @@ pub struct App {
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
     /// Cached PR info per session name, together with when it was last fetched.
-    pub pr_cache: HashMap<String, (Option<git::PrState>, Option<u32>, Instant)>,
+    pub pr_cache: HashMap<String, (git::PrStatus, Instant)>,
     /// Sessions currently having their PR state fetched in a background thread.
     pub pending_pr_checks: HashSet<String>,
-    pub pr_tx: mpsc::Sender<(String, Option<git::PrState>, Option<u32>)>,
-    pub pr_rx: mpsc::Receiver<(String, Option<git::PrState>, Option<u32>)>,
+    pub pr_tx: mpsc::Sender<(String, git::PrStatus)>,
+    pub pr_rx: mpsc::Receiver<(String, git::PrStatus)>,
 }
 
 #[derive(Debug, Clone)]
@@ -300,20 +304,20 @@ impl App {
 
                         // Use cached PR state; kick off a background check if
                         // the cache is missing or stale and no check is in flight.
-                        let (pr_state, pr_number) = self
+                        let (pr_state, pr_number, pr_checks) = self
                             .pr_cache
                             .get(&session.name)
-                            .map(|(state, num, _)| (state.clone(), *num))
-                            .unwrap_or((None, None));
+                            .map(|(status, _)| {
+                                (status.state.clone(), status.number, status.checks.clone())
+                            })
+                            .unwrap_or((None, None, None));
 
                         if !session.pane_current_path.is_empty()
                             && !self.pending_pr_checks.contains(&session.name)
                             && self
                                 .pr_cache
                                 .get(&session.name)
-                                .map(|(_, _, checked_at)| {
-                                    checked_at.elapsed() >= PR_RECHECK_INTERVAL
-                                })
+                                .map(|(_, checked_at)| checked_at.elapsed() >= PR_RECHECK_INTERVAL)
                                 .unwrap_or(true)
                         {
                             self.pending_pr_checks.insert(session.name.clone());
@@ -321,17 +325,14 @@ impl App {
                             let name = session.name.clone();
                             let path = session.pane_current_path.clone();
                             std::thread::spawn(move || {
-                                let (state, number) =
-                                    git::gh_pr_info(std::path::Path::new(&path));
-                                let _ = tx.send((name, state, number));
+                                let status = git::gh_pr_status(std::path::Path::new(&path));
+                                let _ = tx.send((name, status));
                             });
                         }
 
                         // Get the git branch (cheap local call).
                         let branch = if !session.pane_current_path.is_empty() {
-                            git::current_branch(std::path::Path::new(
-                                &session.pane_current_path,
-                            ))
+                            git::current_branch(std::path::Path::new(&session.pane_current_path))
                         } else {
                             String::new()
                         };
@@ -344,6 +345,7 @@ impl App {
                             completed,
                             pr_state,
                             pr_number,
+                            pr_checks,
                             branch,
                         })
                     })
@@ -643,15 +645,16 @@ impl App {
 
     pub fn drain_pr_results(&mut self) {
         let mut resort = false;
-        while let Ok((name, state, number)) = self.pr_rx.try_recv() {
+        while let Ok((name, status)) = self.pr_rx.try_recv() {
             self.pending_pr_checks.remove(&name);
-            self.pr_cache.insert(name.clone(), (state.clone(), number, Instant::now()));
+            self.pr_cache.insert(name.clone(), (status.clone(), Instant::now()));
             if let Some(inst) = self.instances.iter_mut().find(|i| i.session.name == name) {
-                if inst.pr_state != state {
-                    inst.pr_state = state;
+                if inst.pr_state != status.state || inst.pr_checks != status.checks {
+                    inst.pr_state = status.state.clone();
+                    inst.pr_checks = status.checks.clone();
                     resort = true;
                 }
-                inst.pr_number = number;
+                inst.pr_number = status.number;
             }
         }
         if resort {
