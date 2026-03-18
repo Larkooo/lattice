@@ -185,7 +185,9 @@ pub fn build_launch_command(
 
     if let Some(flag) = &agent.prompt_flag {
         if title_injection_enabled {
-            cmd = format!("{} {} \"{}\"", cmd, flag, build_title_instruction(session_name));
+            let instruction =
+                build_title_instruction(session_name).replace('\'', "'\\''");
+            cmd = format!("{} {} '{}'", cmd, flag, instruction);
         }
     }
 
