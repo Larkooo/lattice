@@ -608,6 +608,19 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(t.text),
             ),
         ]));
+
+        if let Some(url) = app.dev_server_urls.get(&instance.session.name) {
+            lines.push(Line::from(vec![
+                Span::styled("dev      ", Style::default().fg(t.muted)),
+                Span::styled(url.clone(), Style::default().fg(t.green)),
+            ]));
+        } else if app.dev_server_sessions.contains_key(&instance.session.name) {
+            lines.push(Line::from(vec![
+                Span::styled("dev      ", Style::default().fg(t.muted)),
+                Span::styled("starting\u{2026}", Style::default().fg(t.yellow)),
+            ]));
+        }
+
         lines.push(Line::from(""));
 
         let preview_space = area.height.saturating_sub(lines.len() as u16 + 1) as usize;
@@ -725,6 +738,19 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(t.text),
         ),
     ]));
+
+    if let Some(url) = app.dev_server_urls.get(&instance.session.name) {
+        lines.push(Line::from(vec![
+            Span::styled("dev      ", Style::default().fg(t.muted)),
+            Span::styled(url.clone(), Style::default().fg(t.green)),
+        ]));
+    } else if app.dev_server_sessions.contains_key(&instance.session.name) {
+        lines.push(Line::from(vec![
+            Span::styled("dev      ", Style::default().fg(t.muted)),
+            Span::styled("starting\u{2026}", Style::default().fg(t.yellow)),
+        ]));
+    }
+
     lines.push(Line::from(""));
 
     let preview_take = area.height.saturating_sub(lines.len() as u16 + 1) as usize;
