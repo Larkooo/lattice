@@ -378,6 +378,39 @@ fn is_no_server_error(msg: &str) -> bool {
         || lower.contains("error connecting to")
 }
 
+/// Capture the output of a dev server tmux session and try to extract a
+/// localhost URL (e.g. `http://localhost:3000`, `http://127.0.0.1:5173`).
+pub fn parse_dev_server_url(session_name: &str) -> Option<String> {
+    let target = format!("{session_name}:0.0");
+    let preview = run_tmux(&["capture-pane", "-p", "-t", &target, "-S", "-50"]).ok()?;
+    extract_url_from_output(&preview)
+}
+
+/// Search output text for the first URL that looks like a local dev server.
+fn extract_url_from_output(text: &str) -> Option<String> {
+    for line in text.lines() {
+        // Look for http(s)://localhost or http(s)://127.0.0.1 or http(s)://0.0.0.0
+        // Common patterns from dev servers:
+        //   "Local:   http://localhost:3000/"
+        //   "  ➜  Local:   http://localhost:5173/"
+        //   "started server on 0.0.0.0:3000, url: http://localhost:3000"
+        //   "ready - started server on http://localhost:3000"
+        for prefix in ["http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1", "http://0.0.0.0", "https://0.0.0.0"] {
+            if let Some(start) = line.find(prefix) {
+                let rest = &line[start..];
+                // Take characters until whitespace or end of line
+                let url: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+                // Strip trailing punctuation that isn't part of the URL
+                let url = url.trim_end_matches(|c: char| matches!(c, ',' | '.' | ')' | ']'));
+                if !url.is_empty() {
+                    return Some(url.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn last_non_empty_line(lines: &[String]) -> Option<&str> {
     for line in lines.iter().rev() {
         let trimmed = line.trim();
@@ -416,5 +449,29 @@ mod tests {
     fn last_non_empty_line_skips_blank_lines() {
         let lines = vec!["".to_owned(), "  ".to_owned(), "hello world ".to_owned(), "".to_owned()];
         assert_eq!(last_non_empty_line(&lines), Some("hello world"));
+    }
+
+    #[test]
+    fn extract_url_finds_localhost() {
+        let output = "  VITE v5.0.0  ready in 300 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n";
+        assert_eq!(extract_url_from_output(output), Some("http://localhost:5173/".to_owned()));
+    }
+
+    #[test]
+    fn extract_url_finds_127() {
+        let output = "started server on http://127.0.0.1:3000, ready\n";
+        assert_eq!(extract_url_from_output(output), Some("http://127.0.0.1:3000".to_owned()));
+    }
+
+    #[test]
+    fn extract_url_finds_zero_addr() {
+        let output = "Listening on http://0.0.0.0:8080\n";
+        assert_eq!(extract_url_from_output(output), Some("http://0.0.0.0:8080".to_owned()));
+    }
+
+    #[test]
+    fn extract_url_returns_none_for_no_url() {
+        let output = "compiling...\ndone.\n";
+        assert_eq!(extract_url_from_output(output), None);
     }
 }

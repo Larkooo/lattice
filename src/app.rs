@@ -178,6 +178,8 @@ pub struct App {
     pub dev_servers_adding: Option<DevServerAddState>,
     /// Maps agent session name → dev server tmux session name.
     pub dev_server_sessions: HashMap<String, String>,
+    /// Maps agent session name → parsed dev server URL (e.g. http://localhost:3000).
+    pub dev_server_urls: HashMap<String, String>,
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
@@ -252,6 +254,7 @@ impl App {
             dev_servers_selected: 0,
             dev_servers_adding: None,
             dev_server_sessions: HashMap::new(),
+            dev_server_urls: HashMap::new(),
             permissions_open: false,
             permissions_selected: 0,
             split: None,
@@ -374,6 +377,16 @@ impl App {
                         })
                     })
                     .collect();
+
+                // Parse dev server URLs from companion tmux sessions.
+                for (agent_session, dev_session) in &self.dev_server_sessions {
+                    if let Some(url) = tmux::parse_dev_server_url(dev_session) {
+                        self.dev_server_urls.insert(agent_session.clone(), url);
+                    }
+                }
+                // Prune URLs for sessions that no longer have a dev server.
+                self.dev_server_urls
+                    .retain(|k, _| self.dev_server_sessions.contains_key(k));
 
                 self.instances.sort_by(|a, b| {
                     instance_project_name(a)
