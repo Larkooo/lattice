@@ -15,7 +15,7 @@ use crate::{
     config, git,
     pathnav::EntryKind,
 };
-use settings::{draw_permissions_view, draw_settings_view, draw_startup_cmds_view};
+use settings::{draw_dev_servers_view, draw_permissions_view, draw_settings_view, draw_startup_cmds_view};
 
 /// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
 fn format_uptime(created_epoch: u64) -> String {
@@ -123,6 +123,8 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
 
     if app.startup_cmds_open {
         draw_startup_cmds_view(frame, sections[2], app);
+    } else if app.dev_servers_open {
+        draw_dev_servers_view(frame, sections[2], app);
     } else if app.permissions_open {
         draw_permissions_view(frame, sections[2], app);
     } else if app.settings_open {
@@ -862,6 +864,20 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             ]
             .concat()
         }
+    } else if app.dev_servers_open {
+        // ── Dev servers sub-view ──
+        if app.dev_servers_adding.is_some() {
+            [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "confirm"), kb_last("esc", "back")]
+                .concat()
+        } else {
+            [
+                kb("\u{2191}/\u{2193}", "navigate"),
+                kb("a", "add"),
+                kb("x", "remove"),
+                kb_last("esc", "back"),
+            ]
+            .concat()
+        }
     } else if app.permissions_open {
         // ── Permissions sub-view ──
         [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "toggle"), kb_last("esc", "back")]
@@ -927,6 +943,24 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
         if active.is_some() {
             s.extend(kb("x", "stop"));
+
+            // Dev server keybinds
+            if app.has_dev_server() {
+                s.extend(kb("R", "restart dev"));
+                s.extend(kb("D", "stop dev"));
+            } else if active
+                .map(|i| {
+                    !i.session.pane_current_path.is_empty()
+                        && config::get_dev_server_command(
+                            &app.config,
+                            &i.session.pane_current_path,
+                        )
+                        .is_some()
+                })
+                .unwrap_or(false)
+            {
+                s.extend(kb("R", "start dev"));
+            }
 
             // Dynamic PR keybinds
             match active {

@@ -16,8 +16,8 @@ use lattice::{
     app::{App, AppScreen},
     config,
     handlers::{
-        handle_main_key, handle_modal_key, handle_permissions_key, handle_settings_key,
-        handle_startup_cmds_key, handle_warning_key,
+        handle_dev_servers_key, handle_main_key, handle_modal_key, handle_permissions_key,
+        handle_settings_key, handle_startup_cmds_key, handle_warning_key,
     },
     ui::draw_ui,
 };
@@ -86,6 +86,8 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                         handle_modal_key(app, key.code);
                     } else if app.startup_cmds_open {
                         handle_startup_cmds_key(app, key.code);
+                    } else if app.dev_servers_open {
+                        handle_dev_servers_key(app, key.code);
                     } else if app.permissions_open {
                         handle_permissions_key(app, key.code);
                     } else if app.settings_open {

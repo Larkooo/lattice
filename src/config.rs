@@ -28,6 +28,8 @@ struct ConfigFile {
     #[serde(default)]
     startup_commands: Vec<StartupCommandsConfig>,
     #[serde(default)]
+    dev_servers: Vec<DevServerConfig>,
+    #[serde(default)]
     permissions: HashMap<String, bool>,
 }
 
@@ -67,6 +69,12 @@ pub struct CustomAgentConfig {
 pub struct StartupCommandsConfig {
     pub path: String,
     pub commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DevServerConfig {
+    pub path: String,
+    pub command: String,
 }
 
 // ── Resolved config the app uses ────────────────────────────────────────────
@@ -110,6 +118,7 @@ pub struct AppConfig {
     pub theme: ThemeConfig,
     pub custom_agents: Vec<CustomAgentConfig>,
     pub startup_commands: Vec<StartupCommandsConfig>,
+    pub dev_servers: Vec<DevServerConfig>,
     pub permissions_bypass: HashMap<String, bool>,
 }
 
@@ -131,6 +140,7 @@ impl Default for AppConfig {
             theme: ThemeConfig::default(),
             custom_agents: Vec::new(),
             startup_commands: Vec::new(),
+            dev_servers: Vec::new(),
             permissions_bypass: HashMap::new(),
         }
     }
@@ -209,6 +219,7 @@ pub fn load_config() -> AppConfig {
 
     config.custom_agents = file.agents;
     config.startup_commands = file.startup_commands;
+    config.dev_servers = file.dev_servers;
     config.permissions_bypass = file.permissions;
     config
 }
@@ -243,6 +254,8 @@ struct ConfigFileSave {
     agents: Vec<CustomAgentConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     startup_commands: Vec<StartupCommandsConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dev_servers: Vec<DevServerConfig>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     permissions: HashMap<String, bool>,
 }
@@ -324,6 +337,7 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
         },
         agents: config.custom_agents.clone(),
         startup_commands: config.startup_commands.clone(),
+        dev_servers: config.dev_servers.clone(),
         permissions: config.permissions_bypass.clone(),
     };
 
@@ -357,6 +371,27 @@ pub fn get_startup_commands(config: &AppConfig, working_dir: &str) -> Vec<String
         }
     }
     Vec::new()
+}
+
+/// Return the dev server command that matches the given working directory.
+/// Matching logic is the same as startup commands: the working directory must
+/// equal or be a subdirectory of the configured path (after `~` expansion).
+pub fn get_dev_server_command(config: &AppConfig, working_dir: &str) -> Option<String> {
+    let working = std::path::Path::new(working_dir);
+    let home = env::var("HOME").unwrap_or_default();
+
+    for entry in &config.dev_servers {
+        let expanded = if entry.path.starts_with('~') {
+            entry.path.replacen('~', &home, 1)
+        } else {
+            entry.path.clone()
+        };
+        let configured = std::path::Path::new(&expanded);
+        if working.starts_with(configured) {
+            return Some(entry.command.clone());
+        }
+    }
+    None
 }
 
 pub fn is_bypass_enabled(config: &AppConfig, agent_id: &str) -> bool {

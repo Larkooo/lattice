@@ -10,7 +10,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
     agents,
-    app::{App, SpawnStep, StartupCmdAddState, StartupCmdAddStep},
+    app::{App, DevServerAddState, DevServerAddStep, SpawnStep, StartupCmdAddState, StartupCmdAddStep},
     config, git,
     pathnav::{ActivateResult, Browser},
     tmux,
@@ -477,6 +477,8 @@ pub fn handle_main_key(
             }
         }
         KeyCode::Char('r') => app.refresh(),
+        KeyCode::Char('D') => app.kill_dev_server(),
+        KeyCode::Char('R') => app.restart_dev_server(),
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('0' as usize);
             if idx <= app.instances.len() {
@@ -507,7 +509,7 @@ pub fn handle_main_key(
     Ok(())
 }
 
-pub const SETTINGS_COUNT: usize = 12;
+pub const SETTINGS_COUNT: usize = 13;
 
 pub fn setting_label(index: usize) -> &'static str {
     match index {
@@ -522,7 +524,8 @@ pub fn setting_label(index: usize) -> &'static str {
         8 => "Sound method",
         9 => "Sound command",
         10 => "Startup commands",
-        11 => "Agent permissions",
+        11 => "Dev servers",
+        12 => "Agent permissions",
         _ => "",
     }
 }
@@ -581,6 +584,14 @@ pub fn setting_value(config: &config::AppConfig, index: usize) -> String {
             }
         }
         11 => {
+            let n = config.dev_servers.len();
+            if n == 0 {
+                "none configured".to_owned()
+            } else {
+                format!("{n} rule{}", if n == 1 { "" } else { "s" })
+            }
+        }
+        12 => {
             let n = config.permissions_bypass.values().filter(|&&v| v).count();
             if n == 0 {
                 "all restricted".to_owned()
@@ -700,6 +711,11 @@ pub fn handle_settings_key(app: &mut App, code: KeyCode) {
                 app.startup_cmds_selected = 0;
                 app.startup_cmds_adding = None;
             } else if idx == 11 {
+                // Open dev servers sub-view
+                app.dev_servers_open = true;
+                app.dev_servers_selected = 0;
+                app.dev_servers_adding = None;
+            } else if idx == 12 {
                 // Open agent permissions sub-view
                 app.permissions_open = true;
                 app.permissions_selected = 0;
@@ -893,6 +909,179 @@ pub fn handle_startup_cmds_key(app: &mut App, code: KeyCode) {
                 }
                 match config::save_config(&app.config) {
                     Ok(()) => app.status_line = "Startup command rule removed".to_owned(),
+                    Err(e) => app.status_line = format!("Save failed: {e}"),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn handle_dev_servers_key(app: &mut App, code: KeyCode) {
+    // If we're in the add flow, handle that first.
+    if let Some(ref mut state) = app.dev_servers_adding {
+        match state.step {
+            DevServerAddStep::BrowsePath => match code {
+                KeyCode::Esc => {
+                    app.dev_servers_adding = None;
+                }
+                KeyCode::Char('j') | KeyCode::Down => state.browser.next(),
+                KeyCode::Char('k') | KeyCode::Up => state.browser.previous(),
+                KeyCode::PageDown => {
+                    for _ in 0..10 {
+                        state.browser.next();
+                    }
+                }
+                KeyCode::PageUp => {
+                    for _ in 0..10 {
+                        state.browser.previous();
+                    }
+                }
+                KeyCode::Enter => match state.browser.activate_selected() {
+                    Ok(ActivateResult::Selected(path)) => {
+                        state.path = path.to_string_lossy().to_string();
+                        state.step = DevServerAddStep::Command;
+                    }
+                    Ok(ActivateResult::StartTypePath) => {
+                        state.current_input = state.browser.cwd().to_string_lossy().to_string();
+                        state.step = DevServerAddStep::TypePath;
+                    }
+                    Ok(ActivateResult::ChangedDirectory) => {}
+                    Ok(_) => {}
+                    Err(err) => {
+                        app.status_line = format!("Path navigation failed: {err}");
+                    }
+                },
+                _ => {}
+            },
+            DevServerAddStep::TypePath => match code {
+                KeyCode::Esc => {
+                    state.step = DevServerAddStep::BrowsePath;
+                    state.current_input.clear();
+                }
+                KeyCode::Backspace => {
+                    state.current_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        state.current_input.push(c);
+                    }
+                }
+                KeyCode::Enter => {
+                    let input = state.current_input.trim().to_owned();
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let expanded = if input.starts_with('~') {
+                        input.replacen('~', &home, 1)
+                    } else {
+                        input.clone()
+                    };
+                    let path = std::path::Path::new(&expanded);
+                    if path.is_dir() {
+                        match state.browser.navigate_to(path) {
+                            Ok(()) => {
+                                state.step = DevServerAddStep::BrowsePath;
+                                state.current_input.clear();
+                            }
+                            Err(err) => {
+                                app.status_line = format!("Cannot navigate to path: {err}");
+                            }
+                        }
+                    } else {
+                        app.status_line = "Not a valid directory".to_owned();
+                    }
+                }
+                _ => {}
+            },
+            DevServerAddStep::Command => match code {
+                KeyCode::Esc => {
+                    if state.current_input.is_empty() {
+                        app.dev_servers_adding = None;
+                    } else {
+                        state.current_input.clear();
+                    }
+                }
+                KeyCode::Backspace => {
+                    state.current_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    state.current_input.push(c);
+                }
+                KeyCode::Enter => {
+                    let input = state.current_input.trim().to_owned();
+                    if input.is_empty() {
+                        app.dev_servers_adding = None;
+                        return;
+                    }
+                    let entry = config::DevServerConfig {
+                        path: state.path.clone(),
+                        command: input,
+                    };
+                    app.config.dev_servers.push(entry);
+                    app.dev_servers_adding = None;
+                    match config::save_config(&app.config) {
+                        Ok(()) => app.status_line = "Dev server rule added".to_owned(),
+                        Err(e) => app.status_line = format!("Save failed: {e}"),
+                    }
+                }
+                _ => {}
+            },
+        }
+        return;
+    }
+
+    let count = app.config.dev_servers.len();
+
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.dev_servers_open = false;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if count > 0 {
+                app.dev_servers_selected = (app.dev_servers_selected + 1) % count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if count > 0 {
+                if app.dev_servers_selected == 0 {
+                    app.dev_servers_selected = count - 1;
+                } else {
+                    app.dev_servers_selected -= 1;
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            let start_dir = app
+                .config
+                .default_spawn_dir
+                .clone()
+                .or_else(|| {
+                    std::env::current_dir().ok().and_then(|p| p.to_str().map(|s| s.to_owned()))
+                })
+                .unwrap_or_else(|| "/".to_owned());
+            match Browser::new_simple(std::path::PathBuf::from(&start_dir)) {
+                Ok(browser) => {
+                    app.dev_servers_adding = Some(DevServerAddState {
+                        step: DevServerAddStep::BrowsePath,
+                        browser,
+                        path: String::new(),
+                        current_input: String::new(),
+                    });
+                }
+                Err(err) => {
+                    app.status_line = format!("Cannot open path browser: {err}");
+                }
+            }
+        }
+        KeyCode::Char('x') => {
+            if count > 0 && app.dev_servers_selected < count {
+                app.config.dev_servers.remove(app.dev_servers_selected);
+                if app.dev_servers_selected >= app.config.dev_servers.len()
+                    && app.dev_servers_selected > 0
+                {
+                    app.dev_servers_selected -= 1;
+                }
+                match config::save_config(&app.config) {
+                    Ok(()) => app.status_line = "Dev server rule removed".to_owned(),
                     Err(e) => app.status_line = format!("Save failed: {e}"),
                 }
             }

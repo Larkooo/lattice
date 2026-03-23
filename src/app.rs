@@ -173,6 +173,11 @@ pub struct App {
     pub permissions_open: bool,
     pub permissions_selected: usize,
     pub split: Option<SplitState>,
+    pub dev_servers_open: bool,
+    pub dev_servers_selected: usize,
+    pub dev_servers_adding: Option<DevServerAddState>,
+    /// Maps agent session name → dev server tmux session name.
+    pub dev_server_sessions: HashMap<String, String>,
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
@@ -197,6 +202,21 @@ pub struct StartupCmdAddState {
     pub browser: Browser,
     pub path: String,
     pub commands: Vec<String>,
+    pub current_input: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum DevServerAddStep {
+    BrowsePath,
+    TypePath,
+    Command,
+}
+
+#[derive(Debug, Clone)]
+pub struct DevServerAddState {
+    pub step: DevServerAddStep,
+    pub browser: Browser,
+    pub path: String,
     pub current_input: String,
 }
 
@@ -228,6 +248,10 @@ impl App {
             startup_cmds_open: false,
             startup_cmds_selected: 0,
             startup_cmds_adding: None,
+            dev_servers_open: false,
+            dev_servers_selected: 0,
+            dev_servers_adding: None,
+            dev_server_sessions: HashMap::new(),
             permissions_open: false,
             permissions_selected: 0,
             split: None,
@@ -546,6 +570,21 @@ impl App {
 
         match tmux::create_session(&session_name, &final_dir, &full_cmd) {
             Ok(()) => {
+                // Start dev server in a companion tmux session if configured.
+                if let Some(dev_cmd) = config::get_dev_server_command(&self.config, &final_dir) {
+                    let dev_session = format!("{session_name}_dev");
+                    match tmux::create_session(&dev_session, &final_dir, &dev_cmd) {
+                        Ok(()) => {
+                            self.dev_server_sessions
+                                .insert(session_name.clone(), dev_session);
+                        }
+                        Err(err) => {
+                            self.status_line =
+                                format!("Dev server failed to start: {err}");
+                        }
+                    }
+                }
+
                 // For agents without a system-prompt flag, inject a first
                 // message asking them to write task titles to a temp file.
                 // Delay gives TUI-based agents time to boot.
@@ -600,6 +639,9 @@ impl App {
                 None
             };
 
+        // Check for an associated dev server session to clean up.
+        let dev_server_session = self.dev_server_sessions.remove(&session_name);
+
         // Mark as stopping so the UI shows an indicator
         self.stopping_sessions.insert(session_name.clone());
         self.status_line = format!("Stopping {session_name}...");
@@ -607,6 +649,10 @@ impl App {
         // Spawn a background thread to do the blocking work
         let tx = self.stop_tx.clone();
         std::thread::spawn(move || {
+            // Kill the companion dev server session first.
+            if let Some(ref dev_name) = dev_server_session {
+                let _ = tmux::kill_session(dev_name);
+            }
             let message = match tmux::kill_session(&session_name) {
                 Ok(()) => {
                     agents::remove_title_file(&session_name);
@@ -732,5 +778,69 @@ impl App {
         split.panes.pop();
         let count = split.panes.len();
         self.status_line = format!("Split: {count} panes selected");
+    }
+
+    /// Kill the dev server for the selected instance (if one is running).
+    pub fn kill_dev_server(&mut self) {
+        let Some(instance) = self.active_instance_ref() else {
+            self.status_line = "Select an instance first".to_owned();
+            return;
+        };
+        let session_name = instance.session.name.clone();
+        if let Some(dev_name) = self.dev_server_sessions.remove(&session_name) {
+            match tmux::kill_session(&dev_name) {
+                Ok(()) => self.status_line = "Dev server stopped".to_owned(),
+                Err(err) => self.status_line = format!("Failed to stop dev server: {err}"),
+            }
+        } else {
+            self.status_line = "No dev server running for this instance".to_owned();
+        }
+    }
+
+    /// Restart the dev server for the selected instance. Kills the existing one
+    /// (if any) and starts a fresh session using the matching config rule.
+    pub fn restart_dev_server(&mut self) {
+        let Some(instance) = self.active_instance_ref() else {
+            self.status_line = "Select an instance first".to_owned();
+            return;
+        };
+        let session_name = instance.session.name.clone();
+        let working_dir = instance.session.pane_current_path.clone();
+
+        // Kill existing dev server if running.
+        if let Some(dev_name) = self.dev_server_sessions.remove(&session_name) {
+            let _ = tmux::kill_session(&dev_name);
+        }
+
+        if working_dir.is_empty() {
+            self.status_line = "No working directory for this instance".to_owned();
+            return;
+        }
+
+        match config::get_dev_server_command(&self.config, &working_dir) {
+            Some(dev_cmd) => {
+                let dev_session = format!("{session_name}_dev");
+                match tmux::create_session(&dev_session, &working_dir, &dev_cmd) {
+                    Ok(()) => {
+                        self.dev_server_sessions
+                            .insert(session_name, dev_session);
+                        self.status_line = "Dev server restarted".to_owned();
+                    }
+                    Err(err) => {
+                        self.status_line = format!("Dev server failed to start: {err}");
+                    }
+                }
+            }
+            None => {
+                self.status_line = "No dev server configured for this directory".to_owned();
+            }
+        }
+    }
+
+    /// Returns true if the selected instance has a dev server running.
+    pub fn has_dev_server(&self) -> bool {
+        self.active_instance_ref()
+            .map(|i| self.dev_server_sessions.contains_key(&i.session.name))
+            .unwrap_or(false)
     }
 }
