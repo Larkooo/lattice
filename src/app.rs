@@ -563,7 +563,7 @@ impl App {
         let full_cmd = if startup_cmds.is_empty() {
             launch_cmd.clone()
         } else {
-            let mut parts = startup_cmds;
+            let mut parts = startup_cmds.clone();
             parts.push(launch_cmd.clone());
             parts.join(" && ")
         };
@@ -573,7 +573,16 @@ impl App {
                 // Start dev server in a companion tmux session if configured.
                 if let Some(dev_cmd) = config::get_dev_server_command(&self.config, &final_dir) {
                     let dev_session = format!("{session_name}_dev");
-                    match tmux::create_session(&dev_session, &final_dir, &dev_cmd) {
+                    // Prepend startup commands so the dev server waits for
+                    // them to finish (e.g. pnpm install) before starting.
+                    let full_dev_cmd = if startup_cmds.is_empty() {
+                        dev_cmd
+                    } else {
+                        let mut parts = startup_cmds.clone();
+                        parts.push(dev_cmd);
+                        parts.join(" && ")
+                    };
+                    match tmux::create_session(&dev_session, &final_dir, &full_dev_cmd) {
                         Ok(()) => {
                             self.dev_server_sessions
                                 .insert(session_name.clone(), dev_session);
@@ -820,7 +829,17 @@ impl App {
         match config::get_dev_server_command(&self.config, &working_dir) {
             Some(dev_cmd) => {
                 let dev_session = format!("{session_name}_dev");
-                match tmux::create_session(&dev_session, &working_dir, &dev_cmd) {
+                // Prepend startup commands so the dev server waits for
+                // them to finish (e.g. pnpm install) before starting.
+                let startup_cmds = config::get_startup_commands(&self.config, &working_dir);
+                let full_dev_cmd = if startup_cmds.is_empty() {
+                    dev_cmd
+                } else {
+                    let mut parts = startup_cmds;
+                    parts.push(dev_cmd);
+                    parts.join(" && ")
+                };
+                match tmux::create_session(&dev_session, &working_dir, &full_dev_cmd) {
                     Ok(()) => {
                         self.dev_server_sessions
                             .insert(session_name, dev_session);
