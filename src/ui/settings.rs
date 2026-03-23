@@ -7,7 +7,7 @@ use ratatui::{
 
 use super::visible_range;
 use crate::{
-    app::{App, StartupCmdAddStep},
+    app::{App, DevServerAddStep, StartupCmdAddStep},
     config,
     handlers::{setting_is_bool, setting_label, setting_value, SETTINGS_COUNT},
     pathnav::EntryKind,
@@ -263,6 +263,187 @@ pub fn draw_startup_cmds_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &
                 };
                 lines.push(Line::from(Span::styled(format!("    $ {cmd}"), cmd_style)));
             }
+        }
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("\u{2191}/\u{2193}", key_style),
+            Span::styled(" navigate   ", desc_style),
+            Span::styled("a", key_style),
+            Span::styled(" add   ", desc_style),
+            Span::styled("x", key_style),
+            Span::styled(" remove   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" back", desc_style),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().fg(t.text).bg(t.bg))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+pub fn draw_dev_servers_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let t = app.theme;
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "dev servers",
+            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "background dev server to start in new worktrees for matching directories",
+            Style::default().fg(t.muted),
+        )),
+        Line::from(""),
+    ];
+
+    if let Some(ref state) = app.dev_servers_adding {
+        match state.step {
+            DevServerAddStep::BrowsePath => {
+                lines.push(Line::from(Span::styled(
+                    "select directory for dev server",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  cwd ", Style::default().fg(t.muted)),
+                    Span::styled(
+                        format!("{}", state.browser.cwd().display()),
+                        Style::default().fg(t.text),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+
+                let entries = state.browser.entries();
+                let capacity = area.height.saturating_sub(12) as usize;
+                let (start, end) =
+                    visible_range(entries.len(), state.browser.selected(), capacity.max(1));
+
+                if start > 0 {
+                    lines.push(Line::from(Span::styled("  ...", Style::default().fg(t.muted))));
+                }
+
+                for (i, entry) in entries.iter().enumerate().skip(start).take(end - start) {
+                    let icon = match entry.kind {
+                        EntryKind::SelectCurrent => "\u{2192}",
+                        EntryKind::TypePath => "/",
+                        EntryKind::Parent => "\u{2190}",
+                        EntryKind::Directory => " ",
+                        _ => " ",
+                    };
+
+                    let style = if i == state.browser.selected() {
+                        Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+                    } else if matches!(entry.kind, EntryKind::TypePath) {
+                        Style::default().fg(t.accent)
+                    } else if matches!(entry.kind, EntryKind::SelectCurrent) {
+                        Style::default().fg(t.green)
+                    } else {
+                        Style::default().fg(t.text)
+                    };
+
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {}", icon, entry.label),
+                        style,
+                    )));
+                }
+
+                if end < entries.len() {
+                    lines.push(Line::from(Span::styled("  ...", Style::default().fg(t.muted))));
+                }
+
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" select   ", desc_style),
+                    Span::styled("\u{2191}/\u{2193}", key_style),
+                    Span::styled(" navigate   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ]));
+            }
+            DevServerAddStep::TypePath => {
+                lines.push(Line::from(Span::styled(
+                    "enter path (~ supported)",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(Span::styled(
+                    if state.current_input.is_empty() {
+                        "  _".to_owned()
+                    } else {
+                        format!("  {}_", state.current_input)
+                    },
+                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" go to path   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" back", desc_style),
+                ]));
+            }
+            DevServerAddStep::Command => {
+                lines.push(Line::from(Span::styled(
+                    format!("path: {}", state.path),
+                    Style::default().fg(t.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "enter dev server command:",
+                    Style::default().fg(t.accent),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}_", state.current_input),
+                    Style::default().fg(t.text),
+                )));
+                lines.push(Line::from(""));
+                let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+                let desc_style = Style::default().fg(t.muted);
+                lines.push(Line::from(vec![
+                    Span::styled("enter", key_style),
+                    Span::styled(" save   ", desc_style),
+                    Span::styled("esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ]));
+            }
+        }
+    } else if app.config.dev_servers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no dev server rules configured",
+            Style::default().fg(t.muted),
+        )));
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("a", key_style),
+            Span::styled(" add rule   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" back", desc_style),
+        ]));
+    } else {
+        for (i, entry) in app.config.dev_servers.iter().enumerate() {
+            let selected = i == app.dev_servers_selected;
+            let path_style = if selected {
+                Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.accent)
+            };
+            lines.push(Line::from(Span::styled(format!("  {}", entry.path), path_style)));
+            let cmd_style = if selected {
+                Style::default().fg(t.bg).bg(t.highlight_bg)
+            } else {
+                Style::default().fg(t.muted)
+            };
+            lines.push(Line::from(Span::styled(format!("    $ {}", entry.command), cmd_style)));
         }
         lines.push(Line::from(""));
         let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
