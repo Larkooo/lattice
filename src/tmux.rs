@@ -102,14 +102,36 @@ pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Res
     // NOTE: Append ":" to the session name so tmux treats dots as literal chars
     // rather than session.window.pane separators.
     let target = format!("{name}:");
-    let send_status = Command::new("tmux")
-        .arg("send-keys")
-        .arg("-t")
-        .arg(&target)
-        .arg(shell_command)
-        .arg("Enter")
-        .status()
-        .with_context(|| format!("failed to send command to session {name}"))?;
+
+    // macOS pty canonical-mode input buffer (MAX_CANON) is 1024 bytes.
+    // Long commands sent via send-keys get silently truncated.  For commands
+    // exceeding the safe threshold, write to a temp script and source it.
+    const SEND_KEYS_SAFE_LIMIT: usize = 768;
+
+    let send_status = if shell_command.len() > SEND_KEYS_SAFE_LIMIT {
+        let script_path = format!("/tmp/lattice_{name}_cmd.sh");
+        std::fs::write(&script_path, shell_command)
+            .with_context(|| format!("failed to write launch script for {name}"))?;
+
+        let short_cmd = format!(". '{script_path}' ; rm -f '{script_path}'");
+        Command::new("tmux")
+            .arg("send-keys")
+            .arg("-t")
+            .arg(&target)
+            .arg(&short_cmd)
+            .arg("Enter")
+            .status()
+            .with_context(|| format!("failed to send command to session {name}"))?
+    } else {
+        Command::new("tmux")
+            .arg("send-keys")
+            .arg("-t")
+            .arg(&target)
+            .arg(shell_command)
+            .arg("Enter")
+            .status()
+            .with_context(|| format!("failed to send command to session {name}"))?
+    };
 
     if !send_status.success() {
         return Err(anyhow!("tmux send-keys exited with status {send_status}"));
