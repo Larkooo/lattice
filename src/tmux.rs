@@ -401,7 +401,7 @@ fn extract_url_from_output(text: &str) -> Option<String> {
                 // Take characters until whitespace or end of line
                 let url: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
                 // Strip trailing punctuation that isn't part of the URL
-                let url = url.trim_end_matches(|c: char| matches!(c, ',' | '.' | ')' | ']'));
+                let url = url.trim_end_matches([',', '.', ')', ']']);
                 if !url.is_empty() {
                     return Some(url.to_owned());
                 }

@@ -388,6 +388,12 @@ impl App {
                 self.dev_server_urls
                     .retain(|k, _| self.dev_server_sessions.contains_key(k));
 
+                // Prune stale PR cache entries for sessions that no longer exist.
+                let active_names: HashSet<String> =
+                    self.instances.iter().map(|i| i.session.name.clone()).collect();
+                self.pr_cache.retain(|k, _| active_names.contains(k));
+                self.pending_pr_checks.retain(|k| active_names.contains(k));
+
                 self.instances.sort_by(|a, b| {
                     instance_project_name(a)
                         .cmp(&instance_project_name(b))
