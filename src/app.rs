@@ -317,6 +317,11 @@ impl App {
 
         match tmux::list_sessions() {
             Ok(sessions) => {
+                // Collect all tmux session names before consuming the iterator
+                // so we can rediscover orphaned dev server sessions below.
+                let all_session_names: HashSet<String> =
+                    sessions.iter().map(|s| s.name.clone()).collect();
+
                 self.instances = sessions
                     .into_iter()
                     .filter_map(|session| {
@@ -378,6 +383,23 @@ impl App {
                     })
                     .collect();
 
+                // Rediscover dev server sessions: if a tmux session named
+                // `{agent_session}_dev` exists but isn't tracked, re-associate
+                // it. This handles lattice restarts where the in-memory map
+                // was lost but the tmux sessions survived.
+                for instance in &self.instances {
+                    let dev_name = format!("{}_dev", instance.session.name);
+                    if all_session_names.contains(&dev_name)
+                        && !self.dev_server_sessions.contains_key(&instance.session.name)
+                    {
+                        self.dev_server_sessions
+                            .insert(instance.session.name.clone(), dev_name);
+                    }
+                }
+                // Prune dev server entries whose tmux session no longer exists.
+                self.dev_server_sessions
+                    .retain(|_, dev_name| all_session_names.contains(dev_name));
+
                 // Parse dev server URLs from companion tmux sessions.
                 for (agent_session, dev_session) in &self.dev_server_sessions {
                     if let Some(url) = tmux::parse_dev_server_url(dev_session) {
@@ -387,6 +409,12 @@ impl App {
                 // Prune URLs for sessions that no longer have a dev server.
                 self.dev_server_urls
                     .retain(|k, _| self.dev_server_sessions.contains_key(k));
+
+                // Prune stale PR cache entries for sessions that no longer exist.
+                let active_names: HashSet<String> =
+                    self.instances.iter().map(|i| i.session.name.clone()).collect();
+                self.pr_cache.retain(|k, _| active_names.contains(k));
+                self.pending_pr_checks.retain(|k| active_names.contains(k));
 
                 self.instances.sort_by(|a, b| {
                     instance_project_name(a)

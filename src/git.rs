@@ -254,7 +254,47 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
         anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
 
+    // Copy untracked build artifacts from the source repo so the worktree
+    // doesn't need a full install step.  Uses `cp -Rc` on macOS (APFS
+    // clonefile — near-instant copy-on-write) and `cp --reflink=auto -R`
+    // on Linux (btrfs/XFS reflinks, falls back to regular copy).
+    for dir_name in &["node_modules", ".next", ".nuxt", "dist", "build", "target/debug"] {
+        let src = root.join(dir_name);
+        if src.is_dir() {
+            let dest = worktree_path.join(dir_name);
+            if !dest.exists() {
+                clone_dir(&src, &dest);
+            }
+        }
+    }
+
     Ok(worktree_path)
+}
+
+/// Copy a directory tree using the fastest platform-available method.
+/// On macOS (APFS) this uses clonefile for near-instant copy-on-write.
+/// On Linux it attempts reflinks, falling back to a regular copy.
+/// Failures are silently ignored — this is best-effort optimisation.
+fn clone_dir(src: &Path, dest: &Path) {
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("cp")
+        .args(["-Rc", &src.to_string_lossy(), &dest.to_string_lossy()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    #[cfg(not(target_os = "macos"))]
+    let status = Command::new("cp")
+        .args(["--reflink=auto", "-R", &src.to_string_lossy(), &dest.to_string_lossy()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    let _ = status;
 }
 
 /// Check if `path` is inside a `.lattice/worktrees/` directory.

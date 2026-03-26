@@ -17,20 +17,19 @@ Design goals:
 
 ## What it does
 
-- Auto-detects installed agent CLIs in `PATH` (currently: `codex`, `claude`, `aider`, `gemini`, `opencode`)
+- Auto-detects installed agent CLIs in `PATH` (currently: `codex`, `claude`, `aider`, `gemini`, `opencode`) plus custom agents via config
 - Detects running agent sessions from tmux
-- Creates new agent instances from inside the list view (`New Instance`)
-- Uses a wizard for creation:
-  - choose agent
-  - navigate filesystem (`..`, `pgup/pgdn`, and long-list scrolling)
-  - optionally create a new directory and choose its name
-  - choose exact working directory with `Use <path>`
-- Shows an agent dashboard list + summary panel
-- Shows each running instance as its own top tab
-- Tracks GitHub PR state and CI checks for agent branches
-- Marks instances with failing PR checks in red and exposes a fix action
-- Attaches into an instance (`enter`)
-- Stops an instance (`x`)
+- Spawn wizard: choose agent, navigate filesystem, create directories, clone from URL, or type a path directly
+- Dashboard with instance list + summary panel showing state, PR number, CI status, branch, uptime, path, and dev server URL
+- Tabbed interface with per-instance tabs and split view for side-by-side monitoring
+- Tracks GitHub PR state and CI checks for agent branches (background polling)
+- PR workflow: create PRs, merge PRs, fix failing CI — all from the TUI
+- Git worktree support: isolate each agent in its own worktree branch
+- Dev server management: auto-start companion dev servers, parse and display localhost URLs
+- Startup commands: run setup commands (e.g. `pnpm install`) before agent launch
+- Agent permissions: configure per-agent bypass flags
+- Configurable theme, notifications (sound on completion), and refresh interval
+- Title injection: agents write task titles to temp files for display in the TUI
 
 ## Quick start
 
@@ -82,19 +81,59 @@ ssh agentops@your-vps
 
 ## Controls
 
+### Navigation
+
 - `up/down` (or `j/k`): move selection in lists
-- `enter` on `New Instance`: start creation wizard
+- `left/right` (or `h/l`, `tab`): switch tabs
+- `1-9`: jump directly to instance tab by number
+- `s` / `d`: return to dashboard tab
+- `r`: refresh
+- `q`: quit
+
+### Instance management
+
+- `n`: open spawn wizard (new instance)
+- `enter` on an instance: attach to selected/current instance
+- `x`: stop selected/current instance
+- `t`: open a terminal split inside the instance's tmux session
+
+### Spawn wizard
+
+- `enter` in agent step: confirm agent selection
+- `1-9`: select agent by number and advance
 - `enter` in path step:
   - on `Use <path>`: create instance in that directory
   - on `..` or a directory: navigate
   - on `Create directory here...`: switch to directory-name input
+- `.`: use current directory
+- `/`: type a path directly
+- `+`: create new directory
+- `g`: clone from git URL
+- `-` / `backspace`: go to parent directory
+- `~`: jump to home directory
 - `pgup/pgdn`: faster scrolling in long directory lists
-- `enter` on an instance: attach to selected/current instance
-- `left/right` (or `h/l`, `tab`): switch tabs
-- `x`: stop selected/current instance
-- `p`: create or merge the selected instance PR
-- `o`: open the selected instance PR in the browser
-- `f`: ask the selected instance to fix failing PR checks
-- `d`: go to dashboard tab
-- `r`: refresh
-- `q`: quit
+
+### PR workflow
+
+- `p`: create PR (no PR) / merge PR (PR open)
+- `o`: open PR in browser
+- `f`: ask instance to fix failing CI checks
+
+### Split view
+
+- `v`: enter split selection mode
+- `v` (in split mode): add another pane
+- `c`: remove last pane
+- `enter`: launch split view (requires 2+ panes)
+- `esc`: cancel split selection
+
+### Dev servers
+
+- `R`: start or restart the dev server for the selected instance
+- `D`: stop the dev server for the selected instance
+
+### Settings
+
+- `enter` on settings row: open settings editor
+- Settings sub-views: startup commands, dev servers, agent permissions
+- Boolean settings toggle on `enter`, text settings open an inline editor

@@ -827,13 +827,12 @@ fn draw_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn instance_state_label(app: &App, instance: &crate::app::AgentInstance) -> (String, Style) {
     let t = app.theme;
-    let pr_tag = instance.pr_number.map(|n| format!(" #{n}")).unwrap_or_default();
     if instance.pr_checks.as_ref().map(|checks| checks.has_failures()).unwrap_or(false) {
-        (format!("PR{pr_tag} checks failing"), Style::default().fg(t.red))
+        ("checks failing".to_owned(), Style::default().fg(t.red))
     } else if instance.pr_state == Some(git::PrState::Merged) {
-        (format!("merged{pr_tag}"), Style::default().fg(t.accent))
+        ("merged".to_owned(), Style::default().fg(t.accent))
     } else if instance.pr_state == Some(git::PrState::Open) {
-        (format!("PR{pr_tag} open"), Style::default().fg(t.yellow))
+        ("pr open".to_owned(), Style::default().fg(t.yellow))
     } else if instance.completed {
         ("completed".to_owned(), Style::default().fg(t.green))
     } else if instance.session.attached {
