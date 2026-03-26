@@ -152,6 +152,13 @@ pub struct StopResult {
     pub message: String,
 }
 
+pub struct SpawnResult {
+    pub session_name: String,
+    pub message: String,
+    /// Maps agent session name → dev server tmux session name, if one was started.
+    pub dev_server_session: Option<(String, String)>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HeaderTabRegion {
     pub tab_index: usize,
@@ -202,6 +209,9 @@ pub struct App {
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
+    pub pending_spawns: usize,
+    pub spawn_tx: mpsc::Sender<SpawnResult>,
+    pub spawn_rx: mpsc::Receiver<SpawnResult>,
     /// Cached PR info per session name, together with when it was last fetched.
     pub pr_cache: HashMap<String, (git::PrStatus, Instant)>,
     /// Sessions currently having their PR state fetched in a background thread.
@@ -258,6 +268,7 @@ impl App {
         let refresh_interval = Duration::from_secs(cfg.refresh_interval.max(1));
         let (stop_tx, stop_rx) = mpsc::channel();
         let (pr_tx, pr_rx) = mpsc::channel();
+        let (spawn_tx, spawn_rx) = mpsc::channel();
 
         Self {
             available_agents: Vec::new(),
@@ -291,6 +302,9 @@ impl App {
             stopping_sessions: HashSet::new(),
             stop_tx,
             stop_rx,
+            pending_spawns: 0,
+            spawn_tx,
+            spawn_rx,
             pr_cache: HashMap::new(),
             pending_pr_checks: HashSet::new(),
             pr_tx,
@@ -645,97 +659,93 @@ impl App {
             return;
         };
 
-        let final_dir =
-            if self.config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
-                match git::create_worktree(std::path::Path::new(&working_dir)) {
-                    Ok(wt_path) => wt_path.to_string_lossy().to_string(),
-                    Err(err) => {
-                        self.status_line = format!("Worktree failed: {err}, using original dir");
-                        working_dir.clone()
+        // Close the modal and show a status immediately so the UI stays responsive.
+        // The heavy work (worktree creation, node_modules copy) runs in a background thread.
+        self.modal = None;
+        self.status_line = format!("Creating {} instance...", agent.label);
+        self.pending_spawns += 1;
+
+        let tx = self.spawn_tx.clone();
+        let config = self.config.clone();
+        std::thread::spawn(move || {
+            let final_dir =
+                if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
+                    match git::create_worktree(std::path::Path::new(&working_dir)) {
+                        Ok(wt_path) => wt_path.to_string_lossy().to_string(),
+                        Err(_) => working_dir.clone(),
                     }
-                }
+                } else {
+                    working_dir.clone()
+                };
+
+            // Install co-author commit-msg hook if either setting is enabled
+            if config.lattice_coauthor {
+                let _ = git::install_lattice_coauthor_hook(std::path::Path::new(&final_dir));
+            } else if config.strip_coauthor {
+                let _ = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir));
+            }
+
+            let session_name = agents::build_managed_session_name(&agent.id);
+            let title_enabled = config.title_injection_enabled;
+            let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
+
+            let launch_cmd =
+                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled);
+
+            let startup_cmds = config::get_startup_commands(&config, &final_dir);
+            let full_cmd = if startup_cmds.is_empty() {
+                launch_cmd.clone()
             } else {
-                working_dir.clone()
+                let mut parts = startup_cmds.clone();
+                parts.push(launch_cmd.clone());
+                parts.join(" && ")
             };
 
-        // Install co-author commit-msg hook if either setting is enabled
-        // Lattice co-author takes priority (replaces agent co-author with Lattice)
-        if self.config.lattice_coauthor {
-            if let Err(err) = git::install_lattice_coauthor_hook(std::path::Path::new(&final_dir)) {
-                self.status_line = format!("Co-author hook failed: {err}");
-            }
-        } else if self.config.strip_coauthor {
-            if let Err(err) = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir)) {
-                self.status_line = format!("Co-author hook failed: {err}");
-            }
-        }
+            match tmux::create_session(&session_name, &final_dir, &full_cmd) {
+                Ok(()) => {
+                    let mut dev_server_session = None;
 
-        let session_name = agents::build_managed_session_name(&agent.id);
-        let title_enabled = self.config.title_injection_enabled;
-        let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
-
-        let launch_cmd =
-            agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled);
-
-        // Prepend any configured startup commands for this directory.
-        let startup_cmds = config::get_startup_commands(&self.config, &final_dir);
-        let full_cmd = if startup_cmds.is_empty() {
-            launch_cmd.clone()
-        } else {
-            let mut parts = startup_cmds.clone();
-            parts.push(launch_cmd.clone());
-            parts.join(" && ")
-        };
-
-        match tmux::create_session(&session_name, &final_dir, &full_cmd) {
-            Ok(()) => {
-                // Start dev server in a companion tmux session if configured.
-                if let Some(dev_cmd) = config::get_dev_server_command(&self.config, &final_dir) {
-                    let dev_session = format!("{session_name}_dev");
-                    // Prepend startup commands so the dev server waits for
-                    // them to finish (e.g. pnpm install) before starting.
-                    let full_dev_cmd = if startup_cmds.is_empty() {
-                        dev_cmd
-                    } else {
-                        let mut parts = startup_cmds.clone();
-                        parts.push(dev_cmd);
-                        parts.join(" && ")
-                    };
-                    match tmux::create_session(&dev_session, &final_dir, &full_dev_cmd) {
-                        Ok(()) => {
-                            self.dev_server_sessions.insert(session_name.clone(), dev_session);
-                        }
-                        Err(err) => {
-                            self.status_line = format!("Dev server failed to start: {err}");
+                    if let Some(dev_cmd) =
+                        config::get_dev_server_command(&config, &final_dir)
+                    {
+                        let dev_session = format!("{session_name}_dev");
+                        let full_dev_cmd = if startup_cmds.is_empty() {
+                            dev_cmd
+                        } else {
+                            let mut parts = startup_cmds;
+                            parts.push(dev_cmd);
+                            parts.join(" && ")
+                        };
+                        if tmux::create_session(&dev_session, &final_dir, &full_dev_cmd).is_ok() {
+                            dev_server_session =
+                                Some((session_name.clone(), dev_session));
                         }
                     }
+
+                    if title_enabled && agents::needs_title_injection(&agent) {
+                        let msg = agents::build_title_injection(&session_name);
+                        let _ = tmux::send_keys_delayed(
+                            &session_name,
+                            &msg,
+                            config.title_injection_delay,
+                        );
+                    }
+
+                    let _ = tx.send(SpawnResult {
+                        session_name,
+                        message: format!("Started {} in {}", agent.label, final_dir),
+                        dev_server_session,
+                    });
                 }
-
-                // For agents without a system-prompt flag, inject a first
-                // message asking them to write task titles to a temp file.
-                // Delay gives TUI-based agents time to boot.
-                if title_enabled && agents::needs_title_injection(&agent) {
-                    let msg = agents::build_title_injection(&session_name);
-                    let delay = self.config.title_injection_delay;
-                    let _ = tmux::send_keys_delayed(&session_name, &msg, delay);
-                }
-
-                self.status_line = format!("Started {} in {}", agent.label, final_dir);
-                self.modal = None;
-                self.refresh();
-
-                if let Some(pos) =
-                    self.instances.iter().position(|x| x.session.name == session_name)
-                {
-                    self.selected_row = pos;
-                    self.selected_tab = pos + 1;
+                Err(err) => {
+                    let _ = tx.send(SpawnResult {
+                        session_name,
+                        message: format!("Failed to start {}: {err}", agent.label),
+                        dev_server_session: None,
+                    });
                 }
             }
-            Err(err) => {
-                self.status_line = format!("Failed to start {}: {err}", agent.label);
-                self.modal = None;
-            }
-        }
+        });
     }
 
     pub fn kill_selected_instance(&mut self) {
@@ -804,6 +814,18 @@ impl App {
 
             let _ = tx.send(StopResult { session_name, message });
         });
+    }
+
+    pub fn drain_spawn_results(&mut self) {
+        while let Ok(result) = self.spawn_rx.try_recv() {
+            self.pending_spawns = self.pending_spawns.saturating_sub(1);
+            self.status_line = result.message;
+            if let Some((agent_session, dev_session)) = result.dev_server_session {
+                self.dev_server_sessions.insert(agent_session, dev_session);
+            }
+            // Force a refresh so the new instance appears in the list
+            self.last_refresh = Instant::now() - self.refresh_interval;
+        }
     }
 
     pub fn drain_stop_results(&mut self) {
