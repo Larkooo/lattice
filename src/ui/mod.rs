@@ -560,6 +560,19 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             ]),
         ];
 
+        if let Some(pr_num) = instance.pr_number {
+            let pr_style = match instance.pr_state {
+                Some(git::PrState::Merged) => Style::default().fg(t.accent),
+                Some(git::PrState::Open) => Style::default().fg(t.yellow),
+                Some(git::PrState::Closed) => Style::default().fg(t.red),
+                None => Style::default().fg(t.text),
+            };
+            lines.push(Line::from(vec![
+                Span::styled("pr       ", Style::default().fg(t.muted)),
+                Span::styled(format!("#{pr_num}"), pr_style),
+            ]));
+        }
+
         if let Some(checks) = instance.pr_checks.as_ref() {
             if let Some(ci_label) = checks.short_label() {
                 let ci_style = if checks.has_failures() {
@@ -692,6 +705,19 @@ fn draw_instance_tab(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::styled(state_label, state_style),
         ]),
     ];
+
+    if let Some(pr_num) = instance.pr_number {
+        let pr_style = match instance.pr_state {
+            Some(git::PrState::Merged) => Style::default().fg(t.accent),
+            Some(git::PrState::Open) => Style::default().fg(t.yellow),
+            Some(git::PrState::Closed) => Style::default().fg(t.red),
+            None => Style::default().fg(t.text),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("pr       ", Style::default().fg(t.muted)),
+            Span::styled(format!("#{pr_num}"), pr_style),
+        ]));
+    }
 
     if let Some(checks) = instance.pr_checks.as_ref() {
         if let Some(ci_label) = checks.short_label() {
