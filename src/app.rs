@@ -1,10 +1,12 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
     sync::mpsc,
     time::{Duration, Instant},
 };
+
+use ratatui::layout::Rect;
 
 use crate::{agents, config, git, pathnav, tmux};
 use agents::AgentDefinition;
@@ -150,6 +152,22 @@ pub struct StopResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct HeaderTabRegion {
+    pub tab_index: usize,
+    pub area: Rect,
+    pub max_offset: usize,
+}
+
+impl HeaderTabRegion {
+    pub fn contains(&self, column: u16, row: u16) -> bool {
+        column >= self.area.x
+            && column < self.area.x.saturating_add(self.area.width)
+            && row >= self.area.y
+            && row < self.area.y.saturating_add(self.area.height)
+    }
+}
+
 pub struct App {
     pub available_agents: Vec<AgentDefinition>,
     pub instances: Vec<AgentInstance>,
@@ -195,6 +213,10 @@ pub struct App {
     /// Set by the UI each frame when any ticker is scrolling, so the main loop
     /// can shorten the poll timeout for smooth animation.
     pub ticker_active: Cell<bool>,
+    /// Header tabs with overflowed titles that can be horizontally scrolled.
+    pub header_tab_regions: RefCell<Vec<HeaderTabRegion>>,
+    /// Per-tab scroll offset in terminal columns for header title rendering.
+    pub header_tab_scroll_offsets: RefCell<Vec<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,7 +295,55 @@ impl App {
             pr_rx,
             tick: 0,
             ticker_active: Cell::new(false),
+            header_tab_regions: RefCell::new(Vec::new()),
+            header_tab_scroll_offsets: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn set_header_tab_regions(&self, tab_count: usize, regions: Vec<HeaderTabRegion>) {
+        let mut offsets = self.header_tab_scroll_offsets.borrow_mut();
+        offsets.resize(tab_count, 0);
+        for (idx, offset) in offsets.iter_mut().enumerate() {
+            let max_offset = regions
+                .iter()
+                .find(|region| region.tab_index == idx)
+                .map(|region| region.max_offset)
+                .unwrap_or(0);
+            *offset = (*offset).min(max_offset);
+        }
+        drop(offsets);
+
+        *self.header_tab_regions.borrow_mut() = regions;
+    }
+
+    pub fn header_tab_scroll_offset(&self, tab_index: usize) -> usize {
+        self.header_tab_scroll_offsets.borrow().get(tab_index).copied().unwrap_or(0)
+    }
+
+    pub fn scroll_header_tab_at(&self, column: u16, row: u16, delta: i32) -> bool {
+        let Some(region) = self
+            .header_tab_regions
+            .borrow()
+            .iter()
+            .copied()
+            .find(|region| region.contains(column, row))
+        else {
+            return false;
+        };
+
+        let mut offsets = self.header_tab_scroll_offsets.borrow_mut();
+        if region.tab_index >= offsets.len() {
+            offsets.resize(region.tab_index + 1, 0);
+        }
+
+        let current = offsets[region.tab_index] as i32;
+        let next = (current + delta).clamp(0, region.max_offset as i32) as usize;
+        if next == offsets[region.tab_index] {
+            return false;
+        }
+
+        offsets[region.tab_index] = next;
+        true
     }
 
     pub fn check_warnings(&mut self) {
@@ -400,13 +470,11 @@ impl App {
                     if all_session_names.contains(&dev_name)
                         && !self.dev_server_sessions.contains_key(&instance.session.name)
                     {
-                        self.dev_server_sessions
-                            .insert(instance.session.name.clone(), dev_name);
+                        self.dev_server_sessions.insert(instance.session.name.clone(), dev_name);
                     }
                 }
                 // Prune dev server entries whose tmux session no longer exists.
-                self.dev_server_sessions
-                    .retain(|_, dev_name| all_session_names.contains(dev_name));
+                self.dev_server_sessions.retain(|_, dev_name| all_session_names.contains(dev_name));
 
                 // Parse dev server URLs from companion tmux sessions.
                 for (agent_session, dev_session) in &self.dev_server_sessions {
@@ -415,8 +483,7 @@ impl App {
                     }
                 }
                 // Prune URLs for sessions that no longer have a dev server.
-                self.dev_server_urls
-                    .retain(|k, _| self.dev_server_sessions.contains_key(k));
+                self.dev_server_urls.retain(|k, _| self.dev_server_sessions.contains_key(k));
 
                 // Prune stale PR cache entries for sessions that no longer exist.
                 let active_names: HashSet<String> =
@@ -633,12 +700,10 @@ impl App {
                     };
                     match tmux::create_session(&dev_session, &final_dir, &full_dev_cmd) {
                         Ok(()) => {
-                            self.dev_server_sessions
-                                .insert(session_name.clone(), dev_session);
+                            self.dev_server_sessions.insert(session_name.clone(), dev_session);
                         }
                         Err(err) => {
-                            self.status_line =
-                                format!("Dev server failed to start: {err}");
+                            self.status_line = format!("Dev server failed to start: {err}");
                         }
                     }
                 }
@@ -890,8 +955,7 @@ impl App {
                 };
                 match tmux::create_session(&dev_session, &working_dir, &full_dev_cmd) {
                     Ok(()) => {
-                        self.dev_server_sessions
-                            .insert(session_name, dev_session);
+                        self.dev_server_sessions.insert(session_name, dev_session);
                         self.status_line = "Dev server restarted".to_owned();
                     }
                     Err(err) => {
