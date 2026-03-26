@@ -223,7 +223,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     // Content: │ label │ label │
     let mut mid_spans: Vec<Span> = Vec::new();
-    let mut tab_regions: Vec<HeaderTabRegion> = Vec::new();
+    let tab_regions: Vec<HeaderTabRegion> = Vec::new();
     let mut col_x = area.x.saturating_add(1);
     for (i, cell) in cells.iter().enumerate() {
         mid_spans.push(Span::styled("\u{2502}", border_style));
@@ -232,12 +232,22 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         let full_width = unicode_width::UnicodeWidthStr::width(cell.full_title.as_str());
         let display_label = if full_width > cw {
             let max_offset = full_width - cw;
-            let offset = app.header_tab_scroll_offset(i).min(max_offset);
-            tab_regions.push(HeaderTabRegion {
-                tab_index: i,
-                area: Rect::new(col_x, area.y.saturating_add(1), cw as u16, 1),
-                max_offset,
-            });
+            // Auto-scroll: pause → scroll right → pause → scroll left → repeat
+            let speed = TICKER_SPEED;
+            let pause = TICKER_PAUSE;
+            let scroll_ticks = max_offset as u64 * speed;
+            let cycle = pause + scroll_ticks + pause + scroll_ticks;
+            let phase = app.tick % cycle;
+            let offset = if phase < pause {
+                0
+            } else if phase < pause + scroll_ticks {
+                ((phase - pause) / speed) as usize
+            } else if phase < pause + scroll_ticks + pause {
+                max_offset
+            } else {
+                max_offset - ((phase - pause - scroll_ticks - pause) / speed) as usize
+            };
+            app.ticker_active.set(true);
             scroll_str(&cell.full_title, cw, offset)
         } else if unicode_width::UnicodeWidthStr::width(cell.label.as_str()) > cw {
             truncate(&cell.label, cw)
