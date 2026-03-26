@@ -476,6 +476,21 @@ pub fn handle_main_key(
                 app.status_line = "Select an instance first".to_owned();
             }
         }
+        KeyCode::Char('O') => {
+            if let Some(instance) = app.active_instance_ref() {
+                let session_name = instance.session.name.clone();
+                if let Some(url) = app.dev_server_urls.get(&session_name) {
+                    git::open_url_in_browser(url);
+                    app.status_line = "Opening dev server in browser…".to_owned();
+                } else if app.dev_server_sessions.contains_key(&session_name) {
+                    app.status_line = "Dev server is starting — URL not detected yet".to_owned();
+                } else {
+                    app.status_line = "No dev server running for this instance".to_owned();
+                }
+            } else {
+                app.status_line = "Select an instance first".to_owned();
+            }
+        }
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char('D') => app.kill_dev_server(),
         KeyCode::Char('R') => app.restart_dev_server(),

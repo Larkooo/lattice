@@ -190,6 +190,38 @@ pub fn gh_pr_open_in_browser(working_dir: &Path) {
         .spawn();
 }
 
+/// Open a URL in the default browser.
+pub fn open_url_in_browser(url: &str) {
+    let url = normalize_browser_url(url);
+
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = Command::new("open");
+        cmd.arg(&url);
+        cmd
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", &url]);
+        cmd
+    };
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut cmd = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&url);
+        cmd
+    };
+
+    let _ = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+}
+
+fn normalize_browser_url(url: &str) -> String {
+    url.replace("://0.0.0.0", "://localhost")
+}
+
 /// Check if `path` is inside a git repository.
 pub fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
@@ -502,5 +534,15 @@ mod tests {
     #[test]
     fn is_git_repo_false_for_tmp() {
         assert!(!is_git_repo(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn normalize_browser_url_rewrites_zero_addr() {
+        assert_eq!(normalize_browser_url("http://0.0.0.0:3000"), "http://localhost:3000");
+    }
+
+    #[test]
+    fn normalize_browser_url_leaves_localhost_unchanged() {
+        assert_eq!(normalize_browser_url("http://localhost:5173/"), "http://localhost:5173/");
     }
 }
