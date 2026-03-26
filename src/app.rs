@@ -208,8 +208,10 @@ pub struct App {
     pub pending_pr_checks: HashSet<String>,
     pub pr_tx: mpsc::Sender<(String, git::PrStatus)>,
     pub pr_rx: mpsc::Receiver<(String, git::PrStatus)>,
-    /// Frame counter used to drive ticker animations (incremented each render).
+    /// Frame counter used to drive ticker animations (derived from wall-clock time).
     pub tick: u64,
+    /// Instant when the app started, used to derive time-based tick values.
+    pub tick_start: Instant,
     /// Set by the UI each frame when any ticker is scrolling, so the main loop
     /// can shorten the poll timeout for smooth animation.
     pub ticker_active: Cell<bool>,
@@ -294,6 +296,7 @@ impl App {
             pr_tx,
             pr_rx,
             tick: 0,
+            tick_start: Instant::now(),
             ticker_active: Cell::new(false),
             header_tab_regions: RefCell::new(Vec::new()),
             header_tab_scroll_offsets: RefCell::new(Vec::new()),

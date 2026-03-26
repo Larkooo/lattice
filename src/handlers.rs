@@ -3,7 +3,7 @@ use std::{io::Stdout, time::Duration};
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers, MouseEvent, MouseEventKind,
+        DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers, MouseEvent,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -28,24 +28,10 @@ pub fn handle_warning_key(app: &mut App, code: KeyCode) {
     }
 }
 
-pub fn handle_main_mouse(app: &mut App, mouse: MouseEvent) {
-    if app.screen != crate::app::AppScreen::Main
-        || app.modal.is_some()
-        || app.startup_cmds_open
-        || app.dev_servers_open
-        || app.permissions_open
-        || app.settings_open
-    {
-        return;
-    }
-
-    let delta = match mouse.kind {
-        MouseEventKind::ScrollLeft => -1,
-        MouseEventKind::ScrollRight => 1,
-        _ => return,
-    };
-
-    let _ = app.scroll_header_tab_at(mouse.column, mouse.row, delta);
+pub fn handle_main_mouse(_app: &mut App, _mouse: MouseEvent) {
+    // Tab titles now auto-scroll via tick-based animation, so no manual
+    // scroll handling is needed. Mouse events are intentionally ignored
+    // to prevent horizontal trackpad movement from affecting the UI.
 }
 
 pub fn handle_modal_key(app: &mut App, code: KeyCode) {

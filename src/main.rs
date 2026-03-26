@@ -64,7 +64,10 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
         app.drain_stop_results();
         app.drain_pr_results();
 
-        app.tick = app.tick.wrapping_add(1);
+        // Derive tick from wall-clock time so animation speed is constant
+        // regardless of how often the event loop iterates (e.g. mouse events).
+        // ~150ms per tick matches the ticker-active poll interval.
+        app.tick = (app.tick_start.elapsed().as_millis() / 150) as u64;
         app.ticker_active.set(false);
         terminal.draw(|frame| draw_ui(frame, app))?;
 
