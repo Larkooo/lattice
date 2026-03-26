@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     env,
     sync::mpsc,
@@ -189,6 +190,11 @@ pub struct App {
     pub pending_pr_checks: HashSet<String>,
     pub pr_tx: mpsc::Sender<(String, git::PrStatus)>,
     pub pr_rx: mpsc::Receiver<(String, git::PrStatus)>,
+    /// Frame counter used to drive ticker animations (incremented each render).
+    pub tick: u64,
+    /// Set by the UI each frame when any ticker is scrolling, so the main loop
+    /// can shorten the poll timeout for smooth animation.
+    pub ticker_active: Cell<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +271,8 @@ impl App {
             pending_pr_checks: HashSet::new(),
             pr_tx,
             pr_rx,
+            tick: 0,
+            ticker_active: Cell::new(false),
         }
     }
 

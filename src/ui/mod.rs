@@ -156,6 +156,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     // Cell 1+ = instance tabs
     struct TabCell {
         label: String,
+        full_title: String,
         is_selected: bool,
         is_in_split: bool,
     }
@@ -170,6 +171,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let mut cells: Vec<TabCell> = Vec::new();
     cells.push(TabCell {
         label: "lattice".to_owned(),
+        full_title: "lattice".to_owned(),
         is_selected: app.selected_tab == 0,
         is_in_split: false,
     });
@@ -184,6 +186,7 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         let in_split = split_names.contains(&instance.session.name);
         cells.push(TabCell {
             label: display,
+            full_title: title,
             is_selected: app.selected_tab == i + 1,
             is_in_split: in_split,
         });
@@ -222,12 +225,17 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         mid_spans.push(Span::styled("\u{2502}", border_style));
 
         let cw = col_widths[i];
-        let display_label =
-            if unicode_width::UnicodeWidthStr::width(cell.label.as_str()) > cw {
-                truncate(&cell.label, cw)
-            } else {
-                cell.label.clone()
-            };
+        let display_label = if cell.is_selected
+            && unicode_width::UnicodeWidthStr::width(cell.full_title.as_str()) > cw
+        {
+            // Selected tab: ticker-scroll the full title instead of truncating
+            app.ticker_active.set(true);
+            ticker_str(&cell.full_title, cw, app.tick)
+        } else if unicode_width::UnicodeWidthStr::width(cell.label.as_str()) > cw {
+            truncate(&cell.label, cw)
+        } else {
+            cell.label.clone()
+        };
         let label_len = unicode_width::UnicodeWidthStr::width(display_label.as_str());
         let pad_total = cw.saturating_sub(label_len);
         let pad_left = pad_total / 2;
@@ -327,8 +335,18 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
             let is_stopping = app.stopping_sessions.contains(&instance.session.name);
 
+            // Helper: use ticker for selected row, truncate otherwise.
+            let fit = |s: &str, max: usize| -> String {
+                if selected && unicode_width::UnicodeWidthStr::width(s) > max {
+                    app.ticker_active.set(true);
+                    ticker_str(s, max, app.tick)
+                } else {
+                    truncate(s, max)
+                }
+            };
+
             let (label, style) = if is_stopping {
-                let label = format!("\u{29D7} {} stopping\u{2026}", truncate(&title, 18));
+                let label = format!("\u{29D7} {} stopping\u{2026}", fit(&title, 18));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -341,7 +359,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 .map(|checks| checks.has_failures())
                 .unwrap_or(false)
             {
-                let label = format!("\u{2717} {}", truncate(&title, 26));
+                let label = format!("\u{2717} {}", fit(&title, 26));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -349,7 +367,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 };
                 (label, style)
             } else if instance.pr_state == Some(git::PrState::Merged) {
-                let label = format!("\u{21B3} {}", truncate(&title, 26));
+                let label = format!("\u{21B3} {}", fit(&title, 26));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -357,7 +375,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 };
                 (label, style)
             } else if instance.pr_state == Some(git::PrState::Open) {
-                let label = format!("\u{2197} {}", truncate(&title, 26));
+                let label = format!("\u{2197} {}", fit(&title, 26));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -365,7 +383,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 };
                 (label, style)
             } else if instance.completed {
-                let label = format!("\u{2713} {}", truncate(&title, 26));
+                let label = format!("\u{2713} {}", fit(&title, 26));
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -373,7 +391,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 };
                 (label, style)
             } else {
-                let label = truncate(&title, 28);
+                let label = fit(&title, 28);
                 let style = if selected {
                     Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
                 } else {
@@ -1038,12 +1056,28 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         s
     };
 
-    let commands = Line::from(spans);
+    // If the keybinds overflow the footer width, wrap-around ticker; otherwise center.
+    let view_w = area.width as usize;
+    let total_w: usize = {
+        use unicode_width::UnicodeWidthStr;
+        spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
+    };
 
-    frame.render_widget(
-        Paragraph::new(commands).alignment(Alignment::Center).style(Style::default().bg(t.bg)),
-        area,
-    );
+    if total_w > view_w {
+        app.ticker_active.set(true);
+        let visible = ticker_spans(&spans, view_w, app.tick);
+        let commands = Line::from(visible);
+        frame.render_widget(
+            Paragraph::new(commands).style(Style::default().bg(t.bg)),
+            area,
+        );
+    } else {
+        let commands = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(commands).alignment(Alignment::Center).style(Style::default().bg(t.bg)),
+            area,
+        );
+    }
 }
 
 fn draw_spawn_modal(frame: &mut ratatui::Frame<'_>, app: &App) {
@@ -1347,6 +1381,122 @@ pub fn truncate(input: &str, max: usize) -> String {
         width += cw;
     }
     out.push('~');
+    out
+}
+
+/// Gap (in spaces) inserted between the end and the repeated start in ticker wrap-around.
+const TICKER_GAP: usize = 4;
+/// Frames per 1-column scroll step.
+const TICKER_SPEED: u64 = 2;
+/// Frames to pause at the start position before scrolling begins.
+const TICKER_PAUSE: u64 = 8;
+
+/// Continuous wrap-around ticker for a list of styled spans.
+///
+/// Scrolls left forever. When text exits on the left, it re-enters from the right
+/// with a small gap — like a rotating donut. Pauses briefly at the home position.
+fn ticker_spans<'a>(spans: &[Span<'a>], view_width: usize, tick: u64) -> Vec<Span<'a>> {
+    use unicode_width::UnicodeWidthChar;
+    use unicode_width::UnicodeWidthStr;
+
+    let total_w: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    if total_w <= view_width {
+        return spans.to_vec();
+    }
+
+    let cycle_len = (total_w + TICKER_GAP) as u64;
+    // Pause at home, then scroll continuously
+    let raw = if tick < TICKER_PAUSE { 0 } else { ((tick - TICKER_PAUSE) / TICKER_SPEED) % cycle_len };
+    let offset = raw as usize;
+
+    // Build the visible window by walking the "doubled" content: spans + gap + spans
+    let gap_style = if let Some(first) = spans.last() { first.style } else { Style::default() };
+    let gap_span = Span::styled(" ".repeat(TICKER_GAP), gap_style);
+
+    // Virtual stream: [spans..., gap, spans...]
+    // We iterate twice over spans with a gap in between, slicing the window [offset, offset+view_width).
+    let mut result: Vec<Span<'a>> = Vec::new();
+    let mut col = 0usize;
+    let window_end = offset + view_width;
+
+    let iter_spans = spans.iter().chain(std::iter::once(&gap_span)).chain(spans.iter());
+
+    for span in iter_spans {
+        let span_w = UnicodeWidthStr::width(span.content.as_ref());
+        let span_end = col + span_w;
+
+        if span_end <= offset {
+            col = span_end;
+            continue;
+        }
+        if col >= window_end {
+            break;
+        }
+
+        let skip = if offset > col { offset - col } else { 0 };
+        let take = (window_end - col).min(span_w) - skip;
+
+        let mut out = String::new();
+        let mut w = 0usize;
+        let mut skipped = 0usize;
+        for c in span.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if skipped < skip {
+                skipped += cw;
+                continue;
+            }
+            if w + cw > take {
+                break;
+            }
+            out.push(c);
+            w += cw;
+        }
+        if !out.is_empty() {
+            result.push(Span::styled(out, span.style));
+        }
+
+        col = span_end;
+    }
+
+    result
+}
+
+/// Continuous wrap-around ticker for a plain string.
+///
+/// Same donut rotation as `ticker_spans` but for a single `&str`.
+fn ticker_str(input: &str, view_width: usize, tick: u64) -> String {
+    use unicode_width::UnicodeWidthChar;
+    use unicode_width::UnicodeWidthStr;
+
+    let full_w = UnicodeWidthStr::width(input);
+    if full_w <= view_width {
+        return input.to_owned();
+    }
+
+    let cycle_len = (full_w + TICKER_GAP) as u64;
+    let raw = if tick < TICKER_PAUSE { 0 } else { ((tick - TICKER_PAUSE) / TICKER_SPEED) % cycle_len };
+    let offset = raw as usize;
+
+    // Virtual stream: input + gap + input  (we only need to pull view_width columns)
+    let gap: &str = "    "; // TICKER_GAP spaces
+    let mut out = String::new();
+    let mut col = 0usize;
+    let mut taken = 0usize;
+
+    // Walk through input, then gap, then input again
+    for c in input.chars().chain(gap.chars()).chain(input.chars()) {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        let char_end = col + cw;
+        col = char_end;
+        if char_end <= offset {
+            continue;
+        }
+        if taken + cw > view_width {
+            break;
+        }
+        out.push(c);
+        taken += cw;
+    }
     out
 }
 
