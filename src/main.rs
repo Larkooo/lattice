@@ -16,8 +16,8 @@ use lattice::{
     app::{App, AppScreen},
     config,
     handlers::{
-        handle_dev_servers_key, handle_main_key, handle_modal_key, handle_permissions_key,
-        handle_settings_key, handle_startup_cmds_key, handle_warning_key,
+        handle_dev_servers_key, handle_main_key, handle_main_mouse, handle_modal_key,
+        handle_permissions_key, handle_settings_key, handle_startup_cmds_key, handle_warning_key,
     },
     ui::draw_ui,
 };
@@ -101,6 +101,7 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                     }
                 }
                 Event::Resize(_, _) => {}
+                Event::Mouse(mouse) => handle_main_mouse(app, mouse),
                 _ => {}
             }
         }

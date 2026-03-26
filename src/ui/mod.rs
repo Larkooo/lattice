@@ -11,11 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     agents,
-    app::{instance_project_name, App, AppScreen, SpawnStep},
+    app::{instance_project_name, App, AppScreen, HeaderTabRegion, SpawnStep},
     config, git,
     pathnav::EntryKind,
 };
-use settings::{draw_dev_servers_view, draw_permissions_view, draw_settings_view, draw_startup_cmds_view};
+use settings::{
+    draw_dev_servers_view, draw_permissions_view, draw_settings_view, draw_startup_cmds_view,
+};
 
 /// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
 fn format_uptime(created_epoch: u64) -> String {
@@ -221,16 +223,22 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     // Content: │ label │ label │
     let mut mid_spans: Vec<Span> = Vec::new();
+    let mut tab_regions: Vec<HeaderTabRegion> = Vec::new();
+    let mut col_x = area.x.saturating_add(1);
     for (i, cell) in cells.iter().enumerate() {
         mid_spans.push(Span::styled("\u{2502}", border_style));
 
         let cw = col_widths[i];
-        let display_label = if cell.is_selected
-            && unicode_width::UnicodeWidthStr::width(cell.full_title.as_str()) > cw
-        {
-            // Selected tab: ticker-scroll the full title instead of truncating
-            app.ticker_active.set(true);
-            ticker_str(&cell.full_title, cw, app.tick)
+        let full_width = unicode_width::UnicodeWidthStr::width(cell.full_title.as_str());
+        let display_label = if full_width > cw {
+            let max_offset = full_width - cw;
+            let offset = app.header_tab_scroll_offset(i).min(max_offset);
+            tab_regions.push(HeaderTabRegion {
+                tab_index: i,
+                area: Rect::new(col_x, area.y.saturating_add(1), cw as u16, 1),
+                max_offset,
+            });
+            scroll_str(&cell.full_title, cw, offset)
         } else if unicode_width::UnicodeWidthStr::width(cell.label.as_str()) > cw {
             truncate(&cell.label, cw)
         } else {
@@ -254,8 +262,10 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         mid_spans.push(Span::styled(" ".repeat(pad_left), Style::default()));
         mid_spans.push(Span::styled(display_label, text_style));
         mid_spans.push(Span::styled(" ".repeat(pad_right), Style::default()));
+        col_x = col_x.saturating_add(cw as u16).saturating_add(1);
     }
     mid_spans.push(Span::styled("\u{2502}", border_style));
+    app.set_header_tab_regions(n, tab_regions);
 
     // Bottom border: └───┴───┴───┘
     let mut bot_spans: Vec<Span> = vec![Span::styled("\u{2514}", border_style)];
@@ -335,15 +345,7 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
             let is_stopping = app.stopping_sessions.contains(&instance.session.name);
 
-            // Helper: use ticker for selected row, truncate otherwise.
-            let fit = |s: &str, max: usize| -> String {
-                if selected && unicode_width::UnicodeWidthStr::width(s) > max {
-                    app.ticker_active.set(true);
-                    ticker_str(s, max, app.tick)
-                } else {
-                    truncate(s, max)
-                }
-            };
+            let fit = |s: &str, max: usize| -> String { truncate(s, max) };
 
             let (label, style) = if is_stopping {
                 let label = format!("\u{29D7} {} stopping\u{2026}", fit(&title, 18));
@@ -1026,11 +1028,8 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             } else if active
                 .map(|i| {
                     !i.session.pane_current_path.is_empty()
-                        && config::get_dev_server_command(
-                            &app.config,
-                            &i.session.pane_current_path,
-                        )
-                        .is_some()
+                        && config::get_dev_server_command(&app.config, &i.session.pane_current_path)
+                            .is_some()
                 })
                 .unwrap_or(false)
             {
@@ -1073,10 +1072,7 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         app.ticker_active.set(true);
         let visible = ticker_spans(&spans, view_w, app.tick);
         let commands = Line::from(visible);
-        frame.render_widget(
-            Paragraph::new(commands).style(Style::default().bg(t.bg)),
-            area,
-        );
+        frame.render_widget(Paragraph::new(commands).style(Style::default().bg(t.bg)), area);
     } else {
         let commands = Line::from(spans);
         frame.render_widget(
@@ -1412,7 +1408,8 @@ fn ticker_spans<'a>(spans: &[Span<'a>], view_width: usize, tick: u64) -> Vec<Spa
 
     let cycle_len = (total_w + TICKER_GAP) as u64;
     // Pause at home, then scroll continuously
-    let raw = if tick < TICKER_PAUSE { 0 } else { ((tick - TICKER_PAUSE) / TICKER_SPEED) % cycle_len };
+    let raw =
+        if tick < TICKER_PAUSE { 0 } else { ((tick - TICKER_PAUSE) / TICKER_SPEED) % cycle_len };
     let offset = raw as usize;
 
     // Build the visible window by walking the "doubled" content: spans + gap + spans
@@ -1467,10 +1464,8 @@ fn ticker_spans<'a>(spans: &[Span<'a>], view_width: usize, tick: u64) -> Vec<Spa
     result
 }
 
-/// Continuous wrap-around ticker for a plain string.
-///
-/// Same donut rotation as `ticker_spans` but for a single `&str`.
-fn ticker_str(input: &str, view_width: usize, tick: u64) -> String {
+/// Bounded horizontal scroll for a plain string.
+fn scroll_str(input: &str, view_width: usize, offset: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     use unicode_width::UnicodeWidthStr;
 
@@ -1479,18 +1474,12 @@ fn ticker_str(input: &str, view_width: usize, tick: u64) -> String {
         return input.to_owned();
     }
 
-    let cycle_len = (full_w + TICKER_GAP) as u64;
-    let raw = if tick < TICKER_PAUSE { 0 } else { ((tick - TICKER_PAUSE) / TICKER_SPEED) % cycle_len };
-    let offset = raw as usize;
-
-    // Virtual stream: input + gap + input  (we only need to pull view_width columns)
-    let gap: &str = "    "; // TICKER_GAP spaces
+    let offset = offset.min(full_w - view_width);
     let mut out = String::new();
     let mut col = 0usize;
     let mut taken = 0usize;
 
-    // Walk through input, then gap, then input again
-    for c in input.chars().chain(gap.chars()).chain(input.chars()) {
+    for c in input.chars() {
         let cw = UnicodeWidthChar::width(c).unwrap_or(0);
         let char_end = col + cw;
         col = char_end;
