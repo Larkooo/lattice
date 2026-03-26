@@ -61,6 +61,7 @@ fn run(cfg: config::AppConfig) -> Result<()> {
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     while !app.should_quit {
         // Check for completed background operations
+        app.drain_spawn_results();
         app.drain_stop_results();
         app.drain_pr_results();
 
@@ -75,7 +76,10 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
         // animation is running so the UI updates smoothly.
         let max_wait = if app.ticker_active.get() {
             Duration::from_millis(150)
-        } else if app.stopping_sessions.is_empty() && app.pending_pr_checks.is_empty() {
+        } else if app.stopping_sessions.is_empty()
+            && app.pending_pr_checks.is_empty()
+            && app.pending_spawns == 0
+        {
             Duration::from_millis(250)
         } else {
             Duration::from_millis(100)
