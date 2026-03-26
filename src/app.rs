@@ -198,6 +198,10 @@ pub struct App {
     pub startup_cmds_adding: Option<StartupCmdAddState>,
     pub permissions_open: bool,
     pub permissions_selected: usize,
+    pub channels_open: bool,
+    pub channels_selected: usize,
+    /// Text buffer when adding a new channel string; `None` = not adding.
+    pub channels_adding: Option<String>,
     pub split: Option<SplitState>,
     pub dev_servers_open: bool,
     pub dev_servers_selected: usize,
@@ -298,6 +302,9 @@ impl App {
             dev_server_urls: HashMap::new(),
             permissions_open: false,
             permissions_selected: 0,
+            channels_open: false,
+            channels_selected: 0,
+            channels_adding: None,
             split: None,
             stopping_sessions: HashSet::new(),
             stop_tx,
@@ -688,9 +695,10 @@ impl App {
             let session_name = agents::build_managed_session_name(&agent.id);
             let title_enabled = config.title_injection_enabled;
             let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
+            let channels = config::get_channels(&config, &agent.id);
 
             let launch_cmd =
-                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled);
+                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &channels);
 
             let startup_cmds = config::get_startup_commands(&config, &final_dir);
             let full_cmd = if startup_cmds.is_empty() {

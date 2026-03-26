@@ -31,6 +31,8 @@ struct ConfigFile {
     dev_servers: Vec<DevServerConfig>,
     #[serde(default)]
     permissions: HashMap<String, bool>,
+    #[serde(default)]
+    channels: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -120,6 +122,7 @@ pub struct AppConfig {
     pub startup_commands: Vec<StartupCommandsConfig>,
     pub dev_servers: Vec<DevServerConfig>,
     pub permissions_bypass: HashMap<String, bool>,
+    pub channels: HashMap<String, Vec<String>>,
 }
 
 impl Default for AppConfig {
@@ -142,6 +145,7 @@ impl Default for AppConfig {
             startup_commands: Vec::new(),
             dev_servers: Vec::new(),
             permissions_bypass: HashMap::new(),
+            channels: HashMap::new(),
         }
     }
 }
@@ -221,6 +225,7 @@ pub fn load_config() -> AppConfig {
     config.startup_commands = file.startup_commands;
     config.dev_servers = file.dev_servers;
     config.permissions_bypass = file.permissions;
+    config.channels = file.channels;
     config
 }
 
@@ -258,6 +263,8 @@ struct ConfigFileSave {
     dev_servers: Vec<DevServerConfig>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     permissions: HashMap<String, bool>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    channels: HashMap<String, Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -339,6 +346,7 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
         startup_commands: config.startup_commands.clone(),
         dev_servers: config.dev_servers.clone(),
         permissions: config.permissions_bypass.clone(),
+        channels: config.channels.clone(),
     };
 
     let content = toml::to_string_pretty(&save).map_err(|e| format!("serialize: {e}"))?;
@@ -396,6 +404,10 @@ pub fn get_dev_server_command(config: &AppConfig, working_dir: &str) -> Option<S
 
 pub fn is_bypass_enabled(config: &AppConfig, agent_id: &str) -> bool {
     config.permissions_bypass.get(agent_id).copied().unwrap_or(false)
+}
+
+pub fn get_channels(config: &AppConfig, agent_id: &str) -> Vec<String> {
+    config.channels.get(agent_id).cloned().unwrap_or_default()
 }
 
 pub fn apply_cli_overrides(config: &mut AppConfig, refresh_seconds: Option<u64>) {
