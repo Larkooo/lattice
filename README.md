@@ -131,6 +131,7 @@ ssh agentops@your-vps
 
 - `R`: start or restart the dev server for the selected instance
 - `D`: stop the dev server for the selected instance
+- `O`: open the detected dev server URL in the browser
 
 ### Settings
 

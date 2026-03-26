@@ -1017,6 +1017,12 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             if app.has_dev_server() {
                 s.extend(kb("R", "restart dev"));
                 s.extend(kb("D", "stop dev"));
+                if active
+                    .map(|i| app.dev_server_urls.contains_key(&i.session.name))
+                    .unwrap_or(false)
+                {
+                    s.extend(kb("O", "view dev"));
+                }
             } else if active
                 .map(|i| {
                     !i.session.pane_current_path.is_empty()
