@@ -64,11 +64,15 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
         app.drain_stop_results();
         app.drain_pr_results();
 
+        app.tick = app.tick.wrapping_add(1);
+        app.ticker_active.set(false);
         terminal.draw(|frame| draw_ui(frame, app))?;
 
-        // Poll more frequently when background work is in flight so the UI
-        // updates promptly when it finishes.
-        let max_wait = if app.stopping_sessions.is_empty() && app.pending_pr_checks.is_empty() {
+        // Poll more frequently when background work is in flight or a ticker
+        // animation is running so the UI updates smoothly.
+        let max_wait = if app.ticker_active.get() {
+            Duration::from_millis(150)
+        } else if app.stopping_sessions.is_empty() && app.pending_pr_checks.is_empty() {
             Duration::from_millis(250)
         } else {
             Duration::from_millis(100)
