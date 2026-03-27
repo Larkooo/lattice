@@ -756,11 +756,17 @@ impl App {
             self.selected_tab = pos + 1;
         }
 
-        // Slow work (artifact copy, hooks, dev server) in the background.
+        // Slow work (git pull, artifact copy, hooks, dev server) in the background.
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
         let final_dir = launch_dir.clone();
         std::thread::spawn(move || {
+            // Pull latest on the original repo so this and future worktrees
+            // stay up to date. Best-effort — failures are silently ignored.
+            if git::is_git_repo(std::path::Path::new(&working_dir)) {
+                git::pull(std::path::Path::new(&working_dir));
+            }
+
             // Copy build artifacts (node_modules, .next, etc.)
             if let Some(ref root) = repo_root {
                 git::copy_build_artifacts(root, std::path::Path::new(&final_dir));

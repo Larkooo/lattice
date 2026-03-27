@@ -222,6 +222,16 @@ fn normalize_browser_url(url: &str) -> String {
     url.replace("://0.0.0.0", "://localhost")
 }
 
+/// Pull the latest changes on the current branch. Best-effort — errors
+/// are silently ignored so a failed pull never blocks the spawn flow.
+pub fn pull(working_dir: &Path) {
+    let _ = Command::new("git")
+        .args(["-C", &working_dir.to_string_lossy(), "pull", "--ff-only"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// Check if `path` is inside a git repository.
 pub fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
