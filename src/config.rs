@@ -23,6 +23,7 @@ struct ConfigFile {
     lattice_coauthor: Option<bool>,
     notifications: Option<NotificationsConfigFile>,
     theme: Option<ThemeConfigFile>,
+    router: Option<RouterConfig>,
     #[serde(default)]
     agents: Vec<CustomAgentConfig>,
     #[serde(default)]
@@ -79,6 +80,17 @@ pub struct DevServerConfig {
     pub command: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct RouterConfig {
+    pub enabled: bool,
+    pub agent: String,
+    #[serde(default)]
+    pub channels: Vec<String>,
+    pub working_dir: Option<String>,
+    pub auto_restart: bool,
+}
+
 // ── Resolved config the app uses ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +130,7 @@ pub struct AppConfig {
     pub lattice_coauthor: bool,
     pub notifications: NotificationsConfig,
     pub theme: ThemeConfig,
+    pub router: Option<RouterConfig>,
     pub custom_agents: Vec<CustomAgentConfig>,
     pub startup_commands: Vec<StartupCommandsConfig>,
     pub dev_servers: Vec<DevServerConfig>,
@@ -141,6 +154,7 @@ impl Default for AppConfig {
                 sound_command: "afplay /System/Library/Sounds/Glass.aiff".to_owned(),
             },
             theme: ThemeConfig::default(),
+            router: None,
             custom_agents: Vec::new(),
             startup_commands: Vec::new(),
             dev_servers: Vec::new(),
@@ -221,6 +235,7 @@ pub fn load_config() -> AppConfig {
         config.theme.red = theme.red.as_deref().and_then(parse_hex_color);
     }
 
+    config.router = file.router;
     config.custom_agents = file.agents;
     config.startup_commands = file.startup_commands;
     config.dev_servers = file.dev_servers;
@@ -255,6 +270,8 @@ struct ConfigFileSave {
     notifications: NotificationsConfigFileSave,
     #[serde(skip_serializing_if = "ThemeConfigSave::is_empty")]
     theme: ThemeConfigSave,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    router: Option<RouterConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     agents: Vec<CustomAgentConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -342,6 +359,7 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
             green: config.theme.green.map(rgb_to_hex),
             red: config.theme.red.map(rgb_to_hex),
         },
+        router: config.router.clone(),
         agents: config.custom_agents.clone(),
         startup_commands: config.startup_commands.clone(),
         dev_servers: config.dev_servers.clone(),

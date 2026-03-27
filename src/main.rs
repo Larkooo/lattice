@@ -14,6 +14,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use lattice::{
     app::{App, AppScreen},
+    cli::CliCommand,
     config,
     handlers::{
         handle_channels_key, handle_dev_servers_key, handle_main_key, handle_main_mouse,
@@ -28,12 +29,21 @@ use lattice::{
 struct Cli {
     #[arg(long, help = "Auto refresh interval in seconds")]
     refresh_seconds: Option<u64>,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let mut cfg = config::load_config();
-    config::apply_cli_overrides(&mut cfg, cli.refresh_seconds);
+    let args = Cli::parse();
+    let cfg = config::load_config();
+
+    if let Some(command) = args.command {
+        return lattice::cli::run_command(command, &cfg);
+    }
+
+    let mut cfg = cfg;
+    config::apply_cli_overrides(&mut cfg, args.refresh_seconds);
     run(cfg)
 }
 
@@ -102,6 +112,8 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
                         handle_dev_servers_key(app, key.code);
                     } else if app.channels_open {
                         handle_channels_key(app, key.code);
+                    } else if app.router_settings_open {
+                        lattice::handlers::handle_router_settings_key(app, key.code);
                     } else if app.permissions_open {
                         handle_permissions_key(app, key.code);
                     } else if app.settings_open {

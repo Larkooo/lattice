@@ -8,7 +8,7 @@ use std::{
 
 use ratatui::layout::Rect;
 
-use crate::{agents, config, git, pathnav, tmux};
+use crate::{agents, config, git, pathnav, router, tmux};
 use agents::AgentDefinition;
 use pathnav::Browser;
 
@@ -202,6 +202,10 @@ pub struct App {
     pub channels_selected: usize,
     /// Text buffer when adding a new channel string; `None` = not adding.
     pub channels_adding: Option<String>,
+    pub router_settings_open: bool,
+    pub router_settings_selected: usize,
+    /// Text buffer when editing a router field; `None` = not editing.
+    pub router_settings_editing: Option<String>,
     pub split: Option<SplitState>,
     pub dev_servers_open: bool,
     pub dev_servers_selected: usize,
@@ -210,6 +214,10 @@ pub struct App {
     pub dev_server_sessions: HashMap<String, String>,
     /// Maps agent session name → parsed dev server URL (e.g. http://localhost:3000).
     pub dev_server_urls: HashMap<String, String>,
+    /// Whether the router is currently alive (checked each refresh).
+    pub router_alive: bool,
+    /// Whether a router spawn is currently in progress.
+    pub router_spawning: bool,
     pub stopping_sessions: HashSet<String>,
     pub stop_tx: mpsc::Sender<StopResult>,
     pub stop_rx: mpsc::Receiver<StopResult>,
@@ -305,7 +313,12 @@ impl App {
             channels_open: false,
             channels_selected: 0,
             channels_adding: None,
+            router_settings_open: false,
+            router_settings_selected: 0,
+            router_settings_editing: None,
             split: None,
+            router_alive: false,
+            router_spawning: false,
             stopping_sessions: HashSet::new(),
             stop_tx,
             stop_rx,
@@ -515,6 +528,9 @@ impl App {
                 self.pr_cache.retain(|k, _| active_names.contains(k));
                 self.pending_pr_checks.retain(|k| active_names.contains(k));
 
+                // Router health check: auto-spawn/restart if configured.
+                self.check_router(&all_session_names);
+
                 self.instances.sort_by(|a, b| {
                     instance_project_name(a)
                         .cmp(&instance_project_name(b))
@@ -525,14 +541,27 @@ impl App {
 
                 let completed_count = self.instances.iter().filter(|i| i.completed).count();
                 let running_count = self.instances.len() - completed_count;
+
+                let router_part = if self.is_router_enabled() {
+                    if self.router_alive {
+                        "router \u{2713} \u{2502} "
+                    } else if self.router_spawning {
+                        "router \u{2026} \u{2502} "
+                    } else {
+                        "router \u{2717} \u{2502} "
+                    }
+                } else {
+                    ""
+                };
+
                 if completed_count > 0 {
                     self.status_line = format!(
-                        "{running_count} running \u{2502} {completed_count} completed \u{2502} {} agents detected",
+                        "{router_part}{running_count} running \u{2502} {completed_count} completed \u{2502} {} agents detected",
                         self.available_agents.len()
                     );
                 } else {
                     self.status_line = format!(
-                        "{} running \u{2502} {} agents detected",
+                        "{router_part}{} running \u{2502} {} agents detected",
                         self.instances.len(),
                         self.available_agents.len()
                     );
@@ -775,6 +804,12 @@ impl App {
 
         let session_name = instance.session.name.clone();
 
+        // Prevent killing the router — it should always be running
+        if router::is_router_session(&session_name) {
+            self.status_line = "Cannot kill the router — disable it in settings instead".to_owned();
+            return;
+        }
+
         // Prevent double-stop
         if self.stopping_sessions.contains(&session_name) {
             self.status_line = format!("{session_name} is already stopping...");
@@ -837,21 +872,31 @@ impl App {
 
     pub fn drain_spawn_results(&mut self) {
         while let Ok(result) = self.spawn_rx.try_recv() {
-            self.pending_spawns = self.pending_spawns.saturating_sub(1);
+            let is_router = router::is_router_session(&result.session_name);
+
+            if is_router {
+                self.router_spawning = false;
+                self.router_alive = true;
+            } else {
+                self.pending_spawns = self.pending_spawns.saturating_sub(1);
+            }
+
             self.status_line = result.message.clone();
             if let Some((agent_session, dev_session)) = result.dev_server_session {
                 self.dev_server_sessions.insert(agent_session, dev_session);
             }
             // Force a refresh so the new instance appears in the list, then
-            // auto-switch to the new instance's tab.
+            // auto-switch to the new instance's tab (skip for router).
             self.refresh();
-            if let Some(pos) = self
-                .instances
-                .iter()
-                .position(|x| x.session.name == result.session_name)
-            {
-                self.selected_row = pos;
-                self.selected_tab = pos + 1;
+            if !is_router {
+                if let Some(pos) = self
+                    .instances
+                    .iter()
+                    .position(|x| x.session.name == result.session_name)
+                {
+                    self.selected_row = pos;
+                    self.selected_tab = pos + 1;
+                }
             }
         }
     }
@@ -1027,5 +1072,64 @@ impl App {
         self.active_instance_ref()
             .map(|i| self.dev_server_sessions.contains_key(&i.session.name))
             .unwrap_or(false)
+    }
+
+    /// Returns true if the router is enabled in config.
+    pub fn is_router_enabled(&self) -> bool {
+        self.config.router.as_ref().map(|r| r.enabled).unwrap_or(false)
+    }
+
+    /// Check router health and auto-spawn/restart if needed.
+    fn check_router(&mut self, all_session_names: &HashSet<String>) {
+        let router_cfg = match &self.config.router {
+            Some(r) if r.enabled => r.clone(),
+            _ => {
+                self.router_alive = false;
+                return;
+            }
+        };
+
+        let alive = all_session_names.contains(router::ROUTER_SESSION_NAME);
+        self.router_alive = alive;
+
+        if alive || self.router_spawning {
+            return;
+        }
+
+        // Router is dead and not currently spawning — auto-restart if configured
+        if router_cfg.auto_restart || !self.router_spawning {
+            self.spawn_router();
+        }
+    }
+
+    /// Spawn the router in a background thread.
+    pub fn spawn_router(&mut self) {
+        if self.router_spawning {
+            return;
+        }
+
+        self.router_spawning = true;
+        self.status_line = "Starting router...".to_owned();
+
+        let config = self.config.clone();
+        let tx = self.spawn_tx.clone();
+        std::thread::spawn(move || {
+            match router::spawn_router(&config) {
+                Ok(session_name) => {
+                    let _ = tx.send(SpawnResult {
+                        session_name,
+                        message: "Router started".to_owned(),
+                        dev_server_session: None,
+                    });
+                }
+                Err(err) => {
+                    let _ = tx.send(SpawnResult {
+                        session_name: router::ROUTER_SESSION_NAME.to_owned(),
+                        message: format!("Router failed to start: {err}"),
+                        dev_server_session: None,
+                    });
+                }
+            }
+        });
     }
 }

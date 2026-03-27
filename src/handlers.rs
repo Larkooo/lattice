@@ -534,7 +534,7 @@ pub fn handle_main_key(
     Ok(())
 }
 
-pub const SETTINGS_COUNT: usize = 14;
+pub const SETTINGS_COUNT: usize = 15;
 
 pub fn setting_label(index: usize) -> &'static str {
     match index {
@@ -552,6 +552,7 @@ pub fn setting_label(index: usize) -> &'static str {
         11 => "Dev servers",
         12 => "Agent permissions",
         13 => "Channels",
+        14 => "Router",
         _ => "",
     }
 }
@@ -631,6 +632,15 @@ pub fn setting_value(config: &config::AppConfig, index: usize) -> String {
                 "none configured".to_owned()
             } else {
                 format!("{n} channel{}", if n == 1 { "" } else { "s" })
+            }
+        }
+        14 => {
+            match &config.router {
+                Some(r) if r.enabled => {
+                    let n = r.channels.len();
+                    format!("enabled ({n} channel{})", if n == 1 { "" } else { "s" })
+                }
+                _ => "disabled".to_owned(),
             }
         }
         _ => String::new(),
@@ -758,6 +768,11 @@ pub fn handle_settings_key(app: &mut App, code: KeyCode) {
                 app.channels_open = true;
                 app.channels_selected = 0;
                 app.channels_adding = None;
+            } else if idx == 14 {
+                // Open router sub-view
+                app.router_settings_open = true;
+                app.router_settings_selected = 0;
+                app.router_settings_editing = None;
             } else if setting_is_bool(idx) || setting_is_cycle(idx) {
                 apply_setting(app, idx, "");
                 match config::save_config(&app.config) {
@@ -1258,4 +1273,135 @@ pub fn attach_into_session(
     terminal.clear()?;
 
     attach_result
+}
+
+// Router settings sub-view has 4 fields:
+// 0: enabled (bool toggle)
+// 1: agent (text)
+// 2: working_dir (text)
+// 3: auto_restart (bool toggle)
+const ROUTER_SETTINGS_COUNT: usize = 4;
+
+pub fn router_setting_label(index: usize) -> &'static str {
+    match index {
+        0 => "Enabled",
+        1 => "Agent",
+        2 => "Working dir",
+        3 => "Auto restart",
+        _ => "",
+    }
+}
+
+pub fn router_setting_value(router: &Option<config::RouterConfig>, index: usize) -> String {
+    let r = match router {
+        Some(r) => r,
+        None => {
+            return match index {
+                0 => "off".to_owned(),
+                1 => "claude".to_owned(),
+                2 => "~".to_owned(),
+                3 => "off".to_owned(),
+                _ => String::new(),
+            }
+        }
+    };
+    match index {
+        0 => if r.enabled { "on" } else { "off" }.to_owned(),
+        1 => r.agent.clone(),
+        2 => r.working_dir.clone().unwrap_or_else(|| "~".to_owned()),
+        3 => if r.auto_restart { "on" } else { "off" }.to_owned(),
+        _ => String::new(),
+    }
+}
+
+pub fn router_setting_is_bool(index: usize) -> bool {
+    matches!(index, 0 | 3)
+}
+
+fn ensure_router_config(cfg: &mut config::AppConfig) -> &mut config::RouterConfig {
+    if cfg.router.is_none() {
+        cfg.router = Some(config::RouterConfig {
+            enabled: false,
+            agent: "claude".to_owned(),
+            channels: Vec::new(),
+            working_dir: None,
+            auto_restart: true,
+        });
+    }
+    cfg.router.as_mut().unwrap()
+}
+
+pub fn handle_router_settings_key(app: &mut App, code: KeyCode) {
+    if let Some(ref mut buf) = app.router_settings_editing {
+        match code {
+            KeyCode::Esc => {
+                app.router_settings_editing = None;
+            }
+            KeyCode::Enter => {
+                let value = buf.clone();
+                let idx = app.router_settings_selected;
+                let r = ensure_router_config(&mut app.config);
+                match idx {
+                    1 => r.agent = value,
+                    2 => {
+                        if value.is_empty() {
+                            r.working_dir = None;
+                        } else {
+                            r.working_dir = Some(value);
+                        }
+                    }
+                    _ => {}
+                }
+                app.router_settings_editing = None;
+                match config::save_config(&app.config) {
+                    Ok(()) => app.status_line = "Router settings saved".to_owned(),
+                    Err(e) => app.status_line = format!("Save failed: {e}"),
+                }
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Char(c) => {
+                buf.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.router_settings_open = false;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.router_settings_selected =
+                (app.router_settings_selected + 1) % ROUTER_SETTINGS_COUNT;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.router_settings_selected == 0 {
+                app.router_settings_selected = ROUTER_SETTINGS_COUNT - 1;
+            } else {
+                app.router_settings_selected -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            let idx = app.router_settings_selected;
+            if router_setting_is_bool(idx) {
+                let r = ensure_router_config(&mut app.config);
+                match idx {
+                    0 => r.enabled = !r.enabled,
+                    3 => r.auto_restart = !r.auto_restart,
+                    _ => {}
+                }
+                match config::save_config(&app.config) {
+                    Ok(()) => app.status_line = "Router settings saved".to_owned(),
+                    Err(e) => app.status_line = format!("Save failed: {e}"),
+                }
+            } else {
+                app.router_settings_editing =
+                    Some(router_setting_value(&app.config.router, idx));
+            }
+        }
+        _ => {}
+    }
 }
