@@ -16,9 +16,9 @@ use lattice::{
     app::{App, AppScreen},
     config,
     handlers::{
-        handle_channels_key, handle_dev_servers_key, handle_main_key, handle_main_mouse,
-        handle_modal_key, handle_permissions_key, handle_settings_key, handle_startup_cmds_key,
-        handle_warning_key,
+        attach_into_session, handle_channels_key, handle_dev_servers_key, handle_main_key,
+        handle_main_mouse, handle_modal_key, handle_permissions_key, handle_settings_key,
+        handle_startup_cmds_key, handle_warning_key,
     },
     ui::draw_ui,
 };
@@ -65,6 +65,16 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
         app.drain_spawn_results();
         app.drain_stop_results();
         app.drain_pr_results();
+
+        // Auto-attach to a newly spawned instance so the user lands directly
+        // in the tmux session without needing to press Enter.
+        if let Some(name) = app.pending_attach.take() {
+            match attach_into_session(terminal, &name) {
+                Ok(()) => app.status_line = format!("Detached from {}", name),
+                Err(err) => app.status_line = format!("Attach failed for {}: {err}", name),
+            }
+            app.refresh();
+        }
 
         // Derive tick from wall-clock time so animation speed is constant
         // regardless of how often the event loop iterates (e.g. mouse events).

@@ -233,6 +233,8 @@ pub struct App {
     pub header_tab_regions: RefCell<Vec<HeaderTabRegion>>,
     /// Per-tab scroll offset in terminal columns for header title rendering.
     pub header_tab_scroll_offsets: RefCell<Vec<usize>>,
+    /// Session name to auto-attach after a background spawn completes.
+    pub pending_attach: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +323,7 @@ impl App {
             ticker_active: Cell::new(false),
             header_tab_regions: RefCell::new(Vec::new()),
             header_tab_scroll_offsets: RefCell::new(Vec::new()),
+            pending_attach: None,
         }
     }
 
@@ -419,6 +422,10 @@ impl App {
 
         match tmux::list_sessions() {
             Ok(sessions) => {
+                // Remember which session was selected so we can restore the
+                // selection after the instance list is rebuilt and re-sorted.
+                let prev_selected_name = self.active_instance_ref().map(|i| i.session.name.clone());
+
                 // Collect all tmux session names before consuming the iterator
                 // so we can rediscover orphaned dev server sessions below.
                 let all_session_names: HashSet<String> =
@@ -521,6 +528,16 @@ impl App {
                         .then(instance_category(a).0.cmp(&instance_category(b).0))
                         .then(a.session.name.cmp(&b.session.name))
                 });
+
+                // Restore selection to the same session after re-sort.
+                if let Some(ref name) = prev_selected_name {
+                    if let Some(pos) = self.instances.iter().position(|i| &i.session.name == name) {
+                        if self.selected_tab > 0 {
+                            self.selected_tab = pos + 1;
+                        }
+                        self.selected_row = pos;
+                    }
+                }
                 self.clamp_selection();
 
                 let completed_count = self.instances.iter().filter(|i| i.completed).count();
@@ -666,11 +683,33 @@ impl App {
             return;
         };
 
-        // Close the modal and show a status immediately so the UI stays responsive.
-        // The heavy work (worktree creation, node_modules copy) runs in a background thread.
+        // Close the modal immediately so the UI stays responsive.
         self.modal = None;
-        self.status_line = format!("Creating {} instance...", agent.label);
         self.pending_spawns += 1;
+
+        let session_name = agents::build_managed_session_name(&agent.id);
+
+        // Create the tmux session instantly with a bare shell so the user
+        // lands in it right away.  The worktree, artifact copy, and launch
+        // command are sent from a background thread.
+        match tmux::create_session_shell(&session_name, &working_dir) {
+            Ok(()) => {
+                self.status_line = format!("Starting {}...", agent.label);
+            }
+            Err(err) => {
+                self.status_line = format!("Failed to start {}: {err}", agent.label);
+                self.pending_spawns = self.pending_spawns.saturating_sub(1);
+                return;
+            }
+        }
+
+        // Send the SpawnResult immediately so the user auto-attaches into
+        // the (still empty) session without waiting for heavy I/O.
+        let _ = self.spawn_tx.send(SpawnResult {
+            session_name: session_name.clone(),
+            message: format!("Starting {}...", agent.label),
+            dev_server_session: None,
+        });
 
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
@@ -695,15 +734,20 @@ impl App {
                 let _ = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir));
             }
 
-            // Copy build artifacts (node_modules, .next, etc.) before starting
-            // the tmux session so that startup commands (e.g. pnpm install) can
-            // find them.  This still runs in the background thread so the UI
-            // stays responsive.
+            // Copy build artifacts (node_modules, .next, etc.) so that
+            // startup commands (e.g. pnpm install) can find them.
             if let Some(ref root) = repo_root {
                 git::copy_build_artifacts(root, std::path::Path::new(&final_dir));
             }
 
-            let session_name = agents::build_managed_session_name(&agent.id);
+            // If a worktree was created, move the session into it.
+            if final_dir != working_dir {
+                let _ = tmux::send_session_command(
+                    &session_name,
+                    &format!("cd '{}'", final_dir.replace('\'', "'\\''")),
+                );
+            }
+
             let title_enabled = config.title_injection_enabled;
             let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
             let channels = config::get_channels(&config, &agent.id);
@@ -720,50 +764,45 @@ impl App {
                 parts.join(" && ")
             };
 
-            match tmux::create_session(&session_name, &final_dir, &full_cmd) {
-                Ok(()) => {
-                    let mut dev_server_session = None;
+            // Send the launch command into the already-running session.
+            if let Err(err) = tmux::send_session_command(&session_name, &full_cmd) {
+                let _ = tx.send(SpawnResult {
+                    session_name,
+                    message: format!("Failed to launch {}: {err}", agent.label),
+                    dev_server_session: None,
+                });
+                return;
+            }
 
-                    if let Some(dev_cmd) =
-                        config::get_dev_server_command(&config, &final_dir)
-                    {
-                        let dev_session = format!("{session_name}_dev");
-                        let full_dev_cmd = if startup_cmds.is_empty() {
-                            dev_cmd
-                        } else {
-                            let mut parts = startup_cmds;
-                            parts.push(dev_cmd);
-                            parts.join(" && ")
-                        };
-                        if tmux::create_session(&dev_session, &final_dir, &full_dev_cmd).is_ok() {
-                            dev_server_session =
-                                Some((session_name.clone(), dev_session));
-                        }
-                    }
-
-                    if title_enabled && agents::needs_title_injection(&agent) {
-                        let msg = agents::build_title_injection(&session_name);
-                        let _ = tmux::send_keys_delayed(
-                            &session_name,
-                            &msg,
-                            config.title_injection_delay,
-                        );
-                    }
-
-                    let _ = tx.send(SpawnResult {
-                        session_name,
-                        message: format!("Started {} in {}", agent.label, final_dir),
-                        dev_server_session,
-                    });
-                }
-                Err(err) => {
-                    let _ = tx.send(SpawnResult {
-                        session_name,
-                        message: format!("Failed to start {}: {err}", agent.label),
-                        dev_server_session: None,
-                    });
+            let mut dev_server_session = None;
+            if let Some(dev_cmd) = config::get_dev_server_command(&config, &final_dir) {
+                let dev_session = format!("{session_name}_dev");
+                let full_dev_cmd = if startup_cmds.is_empty() {
+                    dev_cmd
+                } else {
+                    let mut parts = startup_cmds;
+                    parts.push(dev_cmd);
+                    parts.join(" && ")
+                };
+                if tmux::create_session(&dev_session, &final_dir, &full_dev_cmd).is_ok() {
+                    dev_server_session = Some((session_name.clone(), dev_session));
                 }
             }
+
+            if title_enabled && agents::needs_title_injection(&agent) {
+                let msg = agents::build_title_injection(&session_name);
+                let _ = tmux::send_keys_delayed(
+                    &session_name,
+                    &msg,
+                    config.title_injection_delay,
+                );
+            }
+
+            let _ = tx.send(SpawnResult {
+                session_name,
+                message: format!("Started {} in {}", agent.label, final_dir),
+                dev_server_session,
+            });
         });
     }
 
@@ -852,6 +891,12 @@ impl App {
             {
                 self.selected_row = pos;
                 self.selected_tab = pos + 1;
+            }
+            // Queue auto-attach only for the first result (the instant bare
+            // session).  Follow-up results from the same spawn update status
+            // but should not re-attach.
+            if self.pending_attach.is_none() {
+                self.pending_attach = Some(result.session_name);
             }
         }
     }

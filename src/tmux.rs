@@ -75,9 +75,9 @@ pub fn list_sessions() -> Result<Vec<Session>> {
     Ok(sessions)
 }
 
-pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Result<()> {
-    // Step 1: Create session with the user's default shell so .bashrc/.zshrc are
-    // sourced and PATH (nvm, pyenv, etc.) is fully configured.
+/// Create a detached tmux session with an empty shell in the given directory.
+/// Does NOT send any command — call `send_session_command` afterwards.
+pub fn create_session_shell(name: &str, working_dir: &str) -> Result<()> {
     let status = Command::new("tmux")
         .arg("new-session")
         .arg("-d")
@@ -96,9 +96,11 @@ pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Res
     let _ =
         Command::new("tmux").arg("set-option").arg("-t").arg(name).arg("mouse").arg("on").status();
 
-    // Step 2: Send the command as keystrokes into the session's shell.
-    // This way the shell runs the command in its fully initialized environment,
-    // and if the agent exits, the shell stays alive so the user can see errors.
+    Ok(())
+}
+
+/// Send a shell command as keystrokes into an existing tmux session.
+pub fn send_session_command(name: &str, shell_command: &str) -> Result<()> {
     // NOTE: Append ":" to the session name so tmux treats dots as literal chars
     // rather than session.window.pane separators.
     let target = format!("{name}:");
@@ -138,6 +140,11 @@ pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Res
     }
 
     Ok(())
+}
+
+pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Result<()> {
+    create_session_shell(name, working_dir)?;
+    send_session_command(name, shell_command)
 }
 
 /// Split the active window of an existing session, adding a new shell pane
