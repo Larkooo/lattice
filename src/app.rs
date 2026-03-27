@@ -732,13 +732,10 @@ impl App {
             }
         }
 
-        // Send the SpawnResult immediately so the user auto-attaches into
-        // the (still empty) session without waiting for heavy I/O.
-        let _ = self.spawn_tx.send(SpawnResult {
-            session_name: session_name.clone(),
-            message: format!("Starting {}...", agent.label),
-            dev_server_session: None,
-        });
+        // Do NOT auto-attach yet — the session is still a bare shell.
+        // The background thread will send a SpawnResult (which triggers
+        // auto-attach) only after the agent launch command has been sent,
+        // so the user lands directly in the agent CLI.
 
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
@@ -937,9 +934,9 @@ impl App {
                     self.selected_tab = pos + 1;
                 }
             }
-            // Queue auto-attach only for the first result (the instant bare
-            // session).  Follow-up results from the same spawn update status
-            // but should not re-attach.
+            // Queue auto-attach for the first result from the background
+            // thread (after the agent launch command was sent).  Follow-up
+            // results from the same spawn should not re-attach.
             if self.pending_attach.is_none() {
                 self.pending_attach = Some(result.session_name);
             }
