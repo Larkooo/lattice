@@ -1382,12 +1382,31 @@ pub fn handle_router_settings_key(app: &mut App, code: KeyCode) {
             if router_setting_is_bool(idx) {
                 let r = ensure_router_config(&mut app.config);
                 match idx {
-                    0 => r.enabled = !r.enabled,
+                    0 => {
+                        r.enabled = !r.enabled;
+                        let now_enabled = r.enabled;
+                        // Kill the router session when disabling
+                        if !now_enabled {
+                            let _ = crate::tmux::kill_session(
+                                crate::router::ROUTER_SESSION_NAME,
+                            );
+                            app.router_alive = false;
+                        }
+                    }
                     3 => r.auto_restart = !r.auto_restart,
                     _ => {}
                 }
                 match config::save_config(&app.config) {
-                    Ok(()) => app.status_line = "Router settings saved".to_owned(),
+                    Ok(()) => {
+                        let msg = match idx {
+                            0 if ensure_router_config(&mut app.config).enabled => {
+                                "Router enabled".to_owned()
+                            }
+                            0 => "Router disabled and stopped".to_owned(),
+                            _ => "Router settings saved".to_owned(),
+                        };
+                        app.status_line = msg;
+                    }
                     Err(e) => app.status_line = format!("Save failed: {e}"),
                 }
             } else {
