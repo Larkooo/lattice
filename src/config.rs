@@ -424,10 +424,6 @@ pub fn is_bypass_enabled(config: &AppConfig, agent_id: &str) -> bool {
     config.permissions_bypass.get(agent_id).copied().unwrap_or(false)
 }
 
-pub fn get_channels(config: &AppConfig, agent_id: &str) -> Vec<String> {
-    config.channels.get(agent_id).cloned().unwrap_or_default()
-}
-
 pub fn apply_cli_overrides(config: &mut AppConfig, refresh_seconds: Option<u64>) {
     if let Some(v) = refresh_seconds {
         config.refresh_interval = v.max(1);
