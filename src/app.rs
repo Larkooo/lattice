@@ -718,10 +718,14 @@ impl App {
 
         let session_name = agents::build_managed_session_name(&agent.id);
 
-        // Create the tmux session instantly with a bare shell so the user
-        // lands in it right away.  The worktree, artifact copy, and launch
-        // command are sent from a background thread.
-        match tmux::create_session_shell(&session_name, &working_dir) {
+        // Build the launch command and start the agent CLI directly in the
+        // tmux session — no empty shell, no waiting for a background thread.
+        let title_enabled = self.config.title_injection_enabled;
+        let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
+        let launch_cmd =
+            agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &[]);
+
+        match tmux::create_session(&session_name, &working_dir, &launch_cmd) {
             Ok(()) => {
                 self.status_line = format!("Starting {}...", agent.label);
             }
@@ -732,77 +736,41 @@ impl App {
             }
         }
 
-        // Do NOT auto-attach yet — the session is still a bare shell.
-        // The background thread will send a SpawnResult (which triggers
-        // auto-attach) only after the agent launch command has been sent,
-        // so the user lands directly in the agent CLI.
+        // Auto-attach immediately — the agent CLI is already launching.
+        self.pending_attach = Some(session_name.clone());
+        self.refresh();
+        if let Some(pos) = self.instances.iter().position(|x| x.session.name == session_name) {
+            self.selected_row = pos;
+            self.selected_tab = pos + 1;
+        }
 
+        // Worktree setup, artifact copy, hooks, and dev server happen in
+        // the background — they don't block the agent launch.
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
         std::thread::spawn(move || {
-            let (final_dir, repo_root) =
-                if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
-                    match git::create_worktree(std::path::Path::new(&working_dir)) {
-                        Ok((wt_path, root)) => (
-                            wt_path.to_string_lossy().to_string(),
-                            Some(root),
-                        ),
-                        Err(_) => (working_dir.clone(), None),
-                    }
-                } else {
-                    (working_dir.clone(), None)
-                };
+            let mut final_dir = working_dir.clone();
 
-            // Install co-author commit-msg hook if either setting is enabled
+            if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
+                match git::create_worktree(std::path::Path::new(&working_dir)) {
+                    Ok((wt_path, root)) => {
+                        final_dir = wt_path.to_string_lossy().to_string();
+                        git::copy_build_artifacts(&root, std::path::Path::new(&final_dir));
+                    }
+                    Err(_) => {}
+                }
+            }
+
             if config.lattice_coauthor {
                 let _ = git::install_lattice_coauthor_hook(std::path::Path::new(&final_dir));
             } else if config.strip_coauthor {
                 let _ = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir));
             }
 
-            // Copy build artifacts (node_modules, .next, etc.) so that
-            // startup commands (e.g. pnpm install) can find them.
-            if let Some(ref root) = repo_root {
-                git::copy_build_artifacts(root, std::path::Path::new(&final_dir));
-            }
-
-            // If a worktree was created, move the session into it.
-            if final_dir != working_dir {
-                let _ = tmux::send_session_command(
-                    &session_name,
-                    &format!("cd '{}'", final_dir.replace('\'', "'\\''")),
-                );
-            }
-
-            let title_enabled = config.title_injection_enabled;
-            let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
-
-            // Workers never get channels — those belong to the router
-            let launch_cmd =
-                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &[]);
-
-            let startup_cmds = config::get_startup_commands(&config, &final_dir);
-            let full_cmd = if startup_cmds.is_empty() {
-                launch_cmd.clone()
-            } else {
-                let mut parts = startup_cmds.clone();
-                parts.push(launch_cmd.clone());
-                parts.join(" && ")
-            };
-
-            // Send the launch command into the already-running session.
-            if let Err(err) = tmux::send_session_command(&session_name, &full_cmd) {
-                let _ = tx.send(SpawnResult {
-                    session_name,
-                    message: format!("Failed to launch {}: {err}", agent.label),
-                    dev_server_session: None,
-                });
-                return;
-            }
-
             let mut dev_server_session = None;
             if let Some(dev_cmd) = config::get_dev_server_command(&config, &final_dir) {
                 let dev_session = format!("{session_name}_dev");
+                let startup_cmds = config::get_startup_commands(&config, &final_dir);
                 let full_dev_cmd = if startup_cmds.is_empty() {
                     dev_cmd
                 } else {
@@ -934,12 +902,10 @@ impl App {
                     self.selected_tab = pos + 1;
                 }
             }
-            // Queue auto-attach for the first result from the background
-            // thread (after the agent launch command was sent).  Follow-up
-            // results from the same spawn should not re-attach.
-            if self.pending_attach.is_none() {
-                self.pending_attach = Some(result.session_name);
-            }
+            // Do NOT auto-attach from SpawnResult — create_instance()
+            // already set pending_attach for immediate attach.  The
+            // router should never trigger auto-attach either.
+
         }
     }
 
@@ -1138,8 +1104,8 @@ impl App {
             return;
         }
 
-        // Router is dead and not currently spawning — auto-restart if configured
-        if router_cfg.auto_restart || !self.router_spawning {
+        // Router is dead and not currently spawning — auto-restart if configured.
+        if router_cfg.auto_restart {
             self.spawn_router();
         }
     }
