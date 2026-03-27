@@ -21,24 +21,19 @@ pub fn draw_channels_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
 
     let mut lines = vec![
         Line::from(Span::styled(
-            "channels",
+            "router channels",
             Style::default().fg(t.text).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "configure --channels flags passed when launching agents",
+            "channels passed to the router \u{2014} only the router receives messages",
             Style::default().fg(t.muted),
         )),
         Line::from(""),
     ];
 
     if let Some(ref buf) = app.channels_adding {
-        let agent_label = app
-            .available_agents
-            .get(app.channels_selected)
-            .map(|a| a.label.as_str())
-            .unwrap_or("?");
         lines.push(Line::from(Span::styled(
-            format!("add channel for {agent_label}:"),
+            "add channel:",
             Style::default().fg(t.accent),
         )));
         lines.push(Line::from(Span::styled(
@@ -54,55 +49,20 @@ pub fn draw_channels_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             Span::styled("esc", key_style),
             Span::styled(" cancel", desc_style),
         ]));
-    } else if app.available_agents.is_empty() {
-        lines.push(Line::from(Span::styled("no agents detected", Style::default().fg(t.muted))));
     } else {
-        for (i, agent) in app.available_agents.iter().enumerate() {
-            let selected = i == app.channels_selected;
-            let channels = app.config.channels.get(&agent.id);
-            let count = channels.map(|c| c.len()).unwrap_or(0);
+        let channels = app.config.router.as_ref().map(|r| &r.channels[..]).unwrap_or(&[]);
 
-            let label = format!("{:<16}", agent.label);
-            let summary = if count == 0 {
-                "none".to_owned()
-            } else {
-                format!("{count} channel{}", if count == 1 { "" } else { "s" })
-            };
-
-            let row_style = if selected {
-                Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.text)
-            };
-
-            let summary_style = if selected {
-                row_style
-            } else if count == 0 {
-                Style::default().fg(t.muted)
-            } else {
-                Style::default().fg(t.green)
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {label}"), row_style),
-                Span::styled(summary, summary_style),
-            ]));
-
-            // Show individual channels for the selected agent
-            if selected {
-                if let Some(ch_list) = channels {
-                    for ch in ch_list {
-                        let ch_style = if selected {
-                            Style::default().fg(t.bg).bg(t.highlight_bg)
-                        } else {
-                            Style::default().fg(t.muted)
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("    {ch}"),
-                            ch_style,
-                        )));
-                    }
-                }
+        if channels.is_empty() {
+            lines.push(Line::from(Span::styled("no channels configured", Style::default().fg(t.muted))));
+        } else {
+            for (i, ch) in channels.iter().enumerate() {
+                let selected = i == app.channels_selected;
+                let style = if selected {
+                    Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.text)
+                };
+                lines.push(Line::from(Span::styled(format!("  {ch}"), style)));
             }
         }
 
@@ -739,16 +699,14 @@ pub fn draw_router_settings_view(frame: &mut ratatui::Frame<'_>, area: Rect, app
     // Show configured channels
     let channel_count = app.config.router.as_ref().map(|r| r.channels.len()).unwrap_or(0);
     lines.push(Line::from(""));
+    let ch_summary = if channel_count == 0 {
+        "none".to_owned()
+    } else {
+        format!("{channel_count} configured")
+    };
     lines.push(Line::from(Span::styled(
-        format!(
-            "channels: {}",
-            if channel_count == 0 {
-                "none (configure in channels settings)".to_owned()
-            } else {
-                format!("{channel_count} configured")
-            }
-        ),
-        Style::default().fg(t.muted),
+        format!("channels: {ch_summary}"),
+        if channel_count > 0 { Style::default().fg(t.green) } else { Style::default().fg(t.muted) },
     )));
     if let Some(ref r) = app.config.router {
         for ch in &r.channels {

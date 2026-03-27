@@ -776,10 +776,10 @@ impl App {
 
             let title_enabled = config.title_injection_enabled;
             let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
-            let channels = config::get_channels(&config, &agent.id);
 
+            // Workers never get channels — those belong to the router
             let launch_cmd =
-                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &channels);
+                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &[]);
 
             let startup_cmds = config::get_startup_commands(&config, &final_dir);
             let full_cmd = if startup_cmds.is_empty() {

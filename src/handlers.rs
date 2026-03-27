@@ -551,7 +551,7 @@ pub fn setting_label(index: usize) -> &'static str {
         10 => "Startup commands",
         11 => "Dev servers",
         12 => "Agent permissions",
-        13 => "Channels",
+        13 => "Router channels",
         14 => "Router",
         _ => "",
     }
@@ -627,7 +627,7 @@ pub fn setting_value(config: &config::AppConfig, index: usize) -> String {
             }
         }
         13 => {
-            let n: usize = config.channels.values().map(|v| v.len()).sum();
+            let n = config.router.as_ref().map(|r| r.channels.len()).unwrap_or(0);
             if n == 0 {
                 "none configured".to_owned()
             } else {
@@ -1189,16 +1189,11 @@ pub fn handle_channels_key(app: &mut App, code: KeyCode) {
             KeyCode::Enter => {
                 let channel = buf.trim().to_owned();
                 if !channel.is_empty() {
-                    if let Some(agent) = app.available_agents.get(app.channels_selected) {
-                        app.config
-                            .channels
-                            .entry(agent.id.clone())
-                            .or_default()
-                            .push(channel);
-                        match config::save_config(&app.config) {
-                            Ok(()) => app.status_line = "Channel added".to_owned(),
-                            Err(e) => app.status_line = format!("Save failed: {e}"),
-                        }
+                    let r = ensure_router_config(&mut app.config);
+                    r.channels.push(channel);
+                    match config::save_config(&app.config) {
+                        Ok(()) => app.status_line = "Channel added".to_owned(),
+                        Err(e) => app.status_line = format!("Save failed: {e}"),
                     }
                 }
                 app.channels_adding = None;
@@ -1214,7 +1209,7 @@ pub fn handle_channels_key(app: &mut App, code: KeyCode) {
         return;
     }
 
-    let count = app.available_agents.len();
+    let count = app.config.router.as_ref().map(|r| r.channels.len()).unwrap_or(0);
 
     match code {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -1235,16 +1230,14 @@ pub fn handle_channels_key(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Enter | KeyCode::Char('a') => {
-            if app.channels_selected < count {
-                app.channels_adding = Some(String::new());
-            }
+            app.channels_adding = Some(String::new());
         }
         KeyCode::Char('x') => {
-            if let Some(agent) = app.available_agents.get(app.channels_selected) {
-                if let Some(channels) = app.config.channels.get_mut(&agent.id) {
-                    channels.pop();
-                    if channels.is_empty() {
-                        app.config.channels.remove(&agent.id);
+            if let Some(ref mut r) = app.config.router {
+                if app.channels_selected < r.channels.len() {
+                    r.channels.remove(app.channels_selected);
+                    if app.channels_selected > 0 && app.channels_selected >= r.channels.len() {
+                        app.channels_selected = r.channels.len().saturating_sub(1);
                     }
                     match config::save_config(&app.config) {
                         Ok(()) => app.status_line = "Channel removed".to_owned(),
