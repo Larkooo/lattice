@@ -695,6 +695,14 @@ impl App {
                 let _ = git::install_strip_coauthor_hook(std::path::Path::new(&final_dir));
             }
 
+            // Copy build artifacts (node_modules, .next, etc.) before starting
+            // the tmux session so that startup commands (e.g. pnpm install) can
+            // find them.  This still runs in the background thread so the UI
+            // stays responsive.
+            if let Some(ref root) = repo_root {
+                git::copy_build_artifacts(root, std::path::Path::new(&final_dir));
+            }
+
             let session_name = agents::build_managed_session_name(&agent.id);
             let title_enabled = config.title_injection_enabled;
             let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
@@ -740,16 +748,6 @@ impl App {
                             &msg,
                             config.title_injection_delay,
                         );
-                    }
-
-                    // Copy build artifacts (node_modules, .next, etc.) in the
-                    // background so the user lands in the tmux session instantly
-                    // instead of waiting on potentially large file copies.
-                    if let Some(root) = repo_root {
-                        let wt = final_dir.clone();
-                        std::thread::spawn(move || {
-                            git::copy_build_artifacts(&root, std::path::Path::new(&wt));
-                        });
                     }
 
                     let _ = tx.send(SpawnResult {
@@ -840,12 +838,21 @@ impl App {
     pub fn drain_spawn_results(&mut self) {
         while let Ok(result) = self.spawn_rx.try_recv() {
             self.pending_spawns = self.pending_spawns.saturating_sub(1);
-            self.status_line = result.message;
+            self.status_line = result.message.clone();
             if let Some((agent_session, dev_session)) = result.dev_server_session {
                 self.dev_server_sessions.insert(agent_session, dev_session);
             }
-            // Force a refresh so the new instance appears in the list
-            self.last_refresh = Instant::now() - self.refresh_interval;
+            // Force a refresh so the new instance appears in the list, then
+            // auto-switch to the new instance's tab.
+            self.refresh();
+            if let Some(pos) = self
+                .instances
+                .iter()
+                .position(|x| x.session.name == result.session_name)
+            {
+                self.selected_row = pos;
+                self.selected_tab = pos + 1;
+            }
         }
     }
 
