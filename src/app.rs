@@ -675,14 +675,17 @@ impl App {
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
         std::thread::spawn(move || {
-            let final_dir =
+            let (final_dir, repo_root) =
                 if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
                     match git::create_worktree(std::path::Path::new(&working_dir)) {
-                        Ok(wt_path) => wt_path.to_string_lossy().to_string(),
-                        Err(_) => working_dir.clone(),
+                        Ok((wt_path, root)) => (
+                            wt_path.to_string_lossy().to_string(),
+                            Some(root),
+                        ),
+                        Err(_) => (working_dir.clone(), None),
                     }
                 } else {
-                    working_dir.clone()
+                    (working_dir.clone(), None)
                 };
 
             // Install co-author commit-msg hook if either setting is enabled
@@ -737,6 +740,16 @@ impl App {
                             &msg,
                             config.title_injection_delay,
                         );
+                    }
+
+                    // Copy build artifacts (node_modules, .next, etc.) in the
+                    // background so the user lands in the tmux session instantly
+                    // instead of waiting on potentially large file copies.
+                    if let Some(root) = repo_root {
+                        let wt = final_dir.clone();
+                        std::thread::spawn(move || {
+                            git::copy_build_artifacts(&root, std::path::Path::new(&wt));
+                        });
                     }
 
                     let _ = tx.send(SpawnResult {
