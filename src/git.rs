@@ -253,14 +253,6 @@ pub fn create_worktree(repo_path: &Path) -> Result<(PathBuf, PathBuf)> {
     // Generate a short timestamp-based ID
     let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().to_string();
 
-    // Pull latest changes before creating the worktree so the new branch
-    // starts from the most up-to-date HEAD.
-    let _ = Command::new("git")
-        .args(["-C", &root.to_string_lossy(), "pull", "--ff-only"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
     let worktree_dir = root.join(".lattice").join("worktrees");
     std::fs::create_dir_all(&worktree_dir)
         .with_context(|| format!("failed to create {}", worktree_dir.display()))?;
