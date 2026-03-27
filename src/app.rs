@@ -718,6 +718,18 @@ impl App {
 
         let session_name = agents::build_managed_session_name(&agent.id);
 
+        // Create worktree synchronously if enabled (fast — just git ops).
+        // This way the agent launches inside the isolated worktree.
+        let (launch_dir, repo_root) =
+            if self.config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
+                match git::create_worktree(std::path::Path::new(&working_dir)) {
+                    Ok((wt_path, root)) => (wt_path.to_string_lossy().to_string(), Some(root)),
+                    Err(_) => (working_dir.clone(), None),
+                }
+            } else {
+                (working_dir.clone(), None)
+            };
+
         // Build the launch command and start the agent CLI directly in the
         // tmux session — no empty shell, no waiting for a background thread.
         let title_enabled = self.config.title_injection_enabled;
@@ -725,7 +737,7 @@ impl App {
         let launch_cmd =
             agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &[]);
 
-        match tmux::create_session(&session_name, &working_dir, &launch_cmd) {
+        match tmux::create_session(&session_name, &launch_dir, &launch_cmd) {
             Ok(()) => {
                 self.status_line = format!("Starting {}...", agent.label);
             }
@@ -744,21 +756,14 @@ impl App {
             self.selected_tab = pos + 1;
         }
 
-        // Worktree setup, artifact copy, hooks, and dev server happen in
-        // the background — they don't block the agent launch.
+        // Slow work (artifact copy, hooks, dev server) in the background.
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
+        let final_dir = launch_dir.clone();
         std::thread::spawn(move || {
-            let mut final_dir = working_dir.clone();
-
-            if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
-                match git::create_worktree(std::path::Path::new(&working_dir)) {
-                    Ok((wt_path, root)) => {
-                        final_dir = wt_path.to_string_lossy().to_string();
-                        git::copy_build_artifacts(&root, std::path::Path::new(&final_dir));
-                    }
-                    Err(_) => {}
-                }
+            // Copy build artifacts (node_modules, .next, etc.)
+            if let Some(ref root) = repo_root {
+                git::copy_build_artifacts(root, std::path::Path::new(&final_dir));
             }
 
             if config.lattice_coauthor {
@@ -1089,8 +1094,8 @@ impl App {
 
     /// Check router health and auto-spawn/restart if needed.
     fn check_router(&mut self, all_session_names: &HashSet<String>) {
-        let router_cfg = match &self.config.router {
-            Some(r) if r.enabled => r.clone(),
+        match &self.config.router {
+            Some(r) if r.enabled => {}
             _ => {
                 self.router_alive = false;
                 return;
@@ -1104,10 +1109,8 @@ impl App {
             return;
         }
 
-        // Router is dead and not currently spawning — auto-restart if configured.
-        if router_cfg.auto_restart {
-            self.spawn_router();
-        }
+        // Router is enabled but not alive — spawn it.
+        self.spawn_router();
     }
 
     /// Spawn the router in a background thread.
