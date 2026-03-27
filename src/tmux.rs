@@ -143,8 +143,45 @@ pub fn send_session_command(name: &str, shell_command: &str) -> Result<()> {
 }
 
 pub fn create_session(name: &str, working_dir: &str, shell_command: &str) -> Result<()> {
-    create_session_shell(name, working_dir)?;
-    send_session_command(name, shell_command)
+    // For long commands, write to a temp script so we don't hit OS
+    // argument-length limits.  The script execs the real command so the
+    // session's process is the agent, not the wrapper shell.
+    let (effective_cmd, script_path) = if shell_command.len() > 4096 {
+        let path = format!("/tmp/lattice_{name}_cmd.sh");
+        std::fs::write(&path, format!("#!/bin/sh\nrm -f '{path}'\nexec {shell_command}"))
+            .with_context(|| format!("failed to write launch script for {name}"))?;
+        (format!("sh '{path}'"), Some(path))
+    } else {
+        (shell_command.to_owned(), None)
+    };
+
+    // Pass the command directly to `tmux new-session` so it runs as the
+    // session's initial program — no empty shell, no send-keys, no
+    // visible script-sourcing noise in the terminal.
+    let status = Command::new("tmux")
+        .arg("new-session")
+        .arg("-d")
+        .arg("-s")
+        .arg(name)
+        .arg("-c")
+        .arg(working_dir)
+        .arg(&effective_cmd)
+        .status()
+        .with_context(|| format!("failed to run tmux new-session for {name}"))?;
+
+    if !status.success() {
+        // Clean up script on failure
+        if let Some(ref path) = script_path {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(anyhow!("tmux new-session exited with status {status}"));
+    }
+
+    // Enable mouse mode so scrolling works inside the session.
+    let _ =
+        Command::new("tmux").arg("set-option").arg("-t").arg(name).arg("mouse").arg("on").status();
+
+    Ok(())
 }
 
 /// Split the active window of an existing session, adding a new shell pane
