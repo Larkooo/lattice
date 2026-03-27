@@ -198,6 +198,10 @@ pub struct App {
     pub startup_cmds_adding: Option<StartupCmdAddState>,
     pub permissions_open: bool,
     pub permissions_selected: usize,
+    pub channels_open: bool,
+    pub channels_selected: usize,
+    /// Text buffer when adding a new channel string; `None` = not adding.
+    pub channels_adding: Option<String>,
     pub split: Option<SplitState>,
     pub dev_servers_open: bool,
     pub dev_servers_selected: usize,
@@ -298,6 +302,9 @@ impl App {
             dev_server_urls: HashMap::new(),
             permissions_open: false,
             permissions_selected: 0,
+            channels_open: false,
+            channels_selected: 0,
+            channels_adding: None,
             split: None,
             stopping_sessions: HashSet::new(),
             stop_tx,
@@ -668,14 +675,17 @@ impl App {
         let tx = self.spawn_tx.clone();
         let config = self.config.clone();
         std::thread::spawn(move || {
-            let final_dir =
+            let (final_dir, repo_root) =
                 if config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
                     match git::create_worktree(std::path::Path::new(&working_dir)) {
-                        Ok(wt_path) => wt_path.to_string_lossy().to_string(),
-                        Err(_) => working_dir.clone(),
+                        Ok((wt_path, root)) => (
+                            wt_path.to_string_lossy().to_string(),
+                            Some(root),
+                        ),
+                        Err(_) => (working_dir.clone(), None),
                     }
                 } else {
-                    working_dir.clone()
+                    (working_dir.clone(), None)
                 };
 
             // Install co-author commit-msg hook if either setting is enabled
@@ -688,9 +698,10 @@ impl App {
             let session_name = agents::build_managed_session_name(&agent.id);
             let title_enabled = config.title_injection_enabled;
             let bypass_enabled = config::is_bypass_enabled(&config, &agent.id);
+            let channels = config::get_channels(&config, &agent.id);
 
             let launch_cmd =
-                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled);
+                agents::build_launch_command(&agent, &session_name, title_enabled, bypass_enabled, &channels);
 
             let startup_cmds = config::get_startup_commands(&config, &final_dir);
             let full_cmd = if startup_cmds.is_empty() {
@@ -729,6 +740,16 @@ impl App {
                             &msg,
                             config.title_injection_delay,
                         );
+                    }
+
+                    // Copy build artifacts (node_modules, .next, etc.) in the
+                    // background so the user lands in the tmux session instantly
+                    // instead of waiting on potentially large file copies.
+                    if let Some(root) = repo_root {
+                        let wt = final_dir.clone();
+                        std::thread::spawn(move || {
+                            git::copy_build_artifacts(&root, std::path::Path::new(&wt));
+                        });
                     }
 
                     let _ = tx.send(SpawnResult {

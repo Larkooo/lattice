@@ -13,6 +13,121 @@ use crate::{
     pathnav::EntryKind,
 };
 
+pub fn draw_channels_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let t = app.theme;
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "channels",
+            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "configure --channels flags passed when launching agents",
+            Style::default().fg(t.muted),
+        )),
+        Line::from(""),
+    ];
+
+    if let Some(ref buf) = app.channels_adding {
+        let agent_label = app
+            .available_agents
+            .get(app.channels_selected)
+            .map(|a| a.label.as_str())
+            .unwrap_or("?");
+        lines.push(Line::from(Span::styled(
+            format!("add channel for {agent_label}:"),
+            Style::default().fg(t.accent),
+        )));
+        lines.push(Line::from(Span::styled(
+            if buf.is_empty() { "  _".to_owned() } else { format!("  {buf}_") },
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("enter", key_style),
+            Span::styled(" save   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" cancel", desc_style),
+        ]));
+    } else if app.available_agents.is_empty() {
+        lines.push(Line::from(Span::styled("no agents detected", Style::default().fg(t.muted))));
+    } else {
+        for (i, agent) in app.available_agents.iter().enumerate() {
+            let selected = i == app.channels_selected;
+            let channels = app.config.channels.get(&agent.id);
+            let count = channels.map(|c| c.len()).unwrap_or(0);
+
+            let label = format!("{:<16}", agent.label);
+            let summary = if count == 0 {
+                "none".to_owned()
+            } else {
+                format!("{count} channel{}", if count == 1 { "" } else { "s" })
+            };
+
+            let row_style = if selected {
+                Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            };
+
+            let summary_style = if selected {
+                row_style
+            } else if count == 0 {
+                Style::default().fg(t.muted)
+            } else {
+                Style::default().fg(t.green)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {label}"), row_style),
+                Span::styled(summary, summary_style),
+            ]));
+
+            // Show individual channels for the selected agent
+            if selected {
+                if let Some(ch_list) = channels {
+                    for ch in ch_list {
+                        let ch_style = if selected {
+                            Style::default().fg(t.bg).bg(t.highlight_bg)
+                        } else {
+                            Style::default().fg(t.muted)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("    {ch}"),
+                            ch_style,
+                        )));
+                    }
+                }
+            }
+        }
+
+        lines.push(Line::from(""));
+        let key_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(t.muted);
+        lines.push(Line::from(vec![
+            Span::styled("\u{2191}/\u{2193}", key_style),
+            Span::styled(" navigate   ", desc_style),
+            Span::styled("a", key_style),
+            Span::styled("/", desc_style),
+            Span::styled("enter", key_style),
+            Span::styled(" add   ", desc_style),
+            Span::styled("x", key_style),
+            Span::styled(" remove   ", desc_style),
+            Span::styled("esc", key_style),
+            Span::styled(" back", desc_style),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().fg(t.text).bg(t.bg))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 pub fn draw_permissions_view(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
 

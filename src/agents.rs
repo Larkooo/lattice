@@ -187,11 +187,13 @@ pub fn classify_agent_from_session(
 /// instruction via the agent's system-prompt flag when available.
 /// When `title_injection_enabled` is false, the prompt flag is not used.
 /// When `bypass_enabled` is true, the agent's bypass flag is appended.
+/// When `channels` is non-empty, `--channels <value>` is appended for each entry.
 pub fn build_launch_command(
     agent: &AgentDefinition,
     session_name: &str,
     title_injection_enabled: bool,
     bypass_enabled: bool,
+    channels: &[String],
 ) -> String {
     let mut cmd = agent.launch.clone();
 
@@ -207,6 +209,10 @@ pub fn build_launch_command(
         if let Some(flag) = &agent.bypass_flag {
             cmd = format!("{} {}", cmd, flag);
         }
+    }
+
+    for channel in channels {
+        cmd = format!("{} --channels {}", cmd, channel);
     }
 
     cmd
@@ -518,18 +524,18 @@ mod tests {
         };
 
         // bypass enabled, title enabled
-        let cmd = build_launch_command(&agent, "lattice_claude_999", true, true);
+        let cmd = build_launch_command(&agent, "lattice_claude_999", true, true, &[]);
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--append-system-prompt"));
         assert!(cmd.contains("/tmp/lattice_lattice_claude_999.title"));
 
         // bypass disabled
-        let cmd = build_launch_command(&agent, "lattice_claude_999", true, false);
+        let cmd = build_launch_command(&agent, "lattice_claude_999", true, false, &[]);
         assert!(!cmd.contains("--dangerously-skip-permissions"));
 
         // bypass enabled but agent has no flag
         let agent_no_bypass = AgentDefinition { bypass_flag: None, ..agent.clone() };
-        let cmd = build_launch_command(&agent_no_bypass, "lattice_claude_999", false, true);
+        let cmd = build_launch_command(&agent_no_bypass, "lattice_claude_999", false, true, &[]);
         assert_eq!(cmd, "claude");
     }
 
@@ -543,8 +549,33 @@ mod tests {
             prompt_flag: None,
             bypass_flag: Some("--full-auto".to_owned()),
         };
-        let cmd = build_launch_command(&agent, "lattice_codex_999", false, true);
+        let cmd = build_launch_command(&agent, "lattice_codex_999", false, true, &[]);
         assert_eq!(cmd, "codex --full-auto");
+    }
+
+    #[test]
+    fn build_launch_command_appends_channels() {
+        let agent = AgentDefinition {
+            id: "claude".to_owned(),
+            label: "Claude Code".to_owned(),
+            binary: "claude".to_owned(),
+            launch: "claude".to_owned(),
+            prompt_flag: Some("--append-system-prompt".to_owned()),
+            bypass_flag: None,
+        };
+
+        let channels = vec!["plugin:imessage@claude-plugins-official".to_owned()];
+        let cmd = build_launch_command(&agent, "lattice_claude_999", false, false, &channels);
+        assert_eq!(cmd, "claude --channels plugin:imessage@claude-plugins-official");
+
+        // multiple channels
+        let channels = vec![
+            "plugin:imessage@claude-plugins-official".to_owned(),
+            "plugin:slack@claude-plugins-official".to_owned(),
+        ];
+        let cmd = build_launch_command(&agent, "lattice_claude_999", false, false, &channels);
+        assert!(cmd.contains("--channels plugin:imessage@claude-plugins-official"));
+        assert!(cmd.contains("--channels plugin:slack@claude-plugins-official"));
     }
 
     #[test]

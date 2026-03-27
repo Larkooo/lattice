@@ -16,7 +16,8 @@ use crate::{
     pathnav::EntryKind,
 };
 use settings::{
-    draw_dev_servers_view, draw_permissions_view, draw_settings_view, draw_startup_cmds_view,
+    draw_channels_view, draw_dev_servers_view, draw_permissions_view, draw_settings_view,
+    draw_startup_cmds_view,
 };
 
 /// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
@@ -127,6 +128,8 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
         draw_startup_cmds_view(frame, sections[2], app);
     } else if app.dev_servers_open {
         draw_dev_servers_view(frame, sections[2], app);
+    } else if app.channels_open {
+        draw_channels_view(frame, sections[2], app);
     } else if app.permissions_open {
         draw_permissions_view(frame, sections[2], app);
     } else if app.settings_open {
@@ -950,6 +953,19 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         if app.dev_servers_adding.is_some() {
             [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "confirm"), kb_last("esc", "back")]
                 .concat()
+        } else {
+            [
+                kb("\u{2191}/\u{2193}", "navigate"),
+                kb("a", "add"),
+                kb("x", "remove"),
+                kb_last("esc", "back"),
+            ]
+            .concat()
+        }
+    } else if app.channels_open {
+        // ── Channels sub-view ──
+        if app.channels_adding.is_some() {
+            [kb("enter", "save"), kb_last("esc", "cancel")].concat()
         } else {
             [
                 kb("\u{2191}/\u{2193}", "navigate"),

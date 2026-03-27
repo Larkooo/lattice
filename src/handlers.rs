@@ -534,7 +534,7 @@ pub fn handle_main_key(
     Ok(())
 }
 
-pub const SETTINGS_COUNT: usize = 13;
+pub const SETTINGS_COUNT: usize = 14;
 
 pub fn setting_label(index: usize) -> &'static str {
     match index {
@@ -551,6 +551,7 @@ pub fn setting_label(index: usize) -> &'static str {
         10 => "Startup commands",
         11 => "Dev servers",
         12 => "Agent permissions",
+        13 => "Channels",
         _ => "",
     }
 }
@@ -622,6 +623,14 @@ pub fn setting_value(config: &config::AppConfig, index: usize) -> String {
                 "all restricted".to_owned()
             } else {
                 format!("{n} bypassed")
+            }
+        }
+        13 => {
+            let n: usize = config.channels.values().map(|v| v.len()).sum();
+            if n == 0 {
+                "none configured".to_owned()
+            } else {
+                format!("{n} channel{}", if n == 1 { "" } else { "s" })
             }
         }
         _ => String::new(),
@@ -744,6 +753,11 @@ pub fn handle_settings_key(app: &mut App, code: KeyCode) {
                 // Open agent permissions sub-view
                 app.permissions_open = true;
                 app.permissions_selected = 0;
+            } else if idx == 13 {
+                // Open channels sub-view
+                app.channels_open = true;
+                app.channels_selected = 0;
+                app.channels_adding = None;
             } else if setting_is_bool(idx) || setting_is_cycle(idx) {
                 apply_setting(app, idx, "");
                 match config::save_config(&app.config) {
@@ -1141,6 +1155,84 @@ pub fn handle_permissions_key(app: &mut App, code: KeyCode) {
                     app.config.permissions_bypass.insert(agent.id.clone(), !current);
                     match config::save_config(&app.config) {
                         Ok(()) => app.status_line = "Permissions saved".to_owned(),
+                        Err(e) => app.status_line = format!("Save failed: {e}"),
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn handle_channels_key(app: &mut App, code: KeyCode) {
+    // If adding a channel, handle text input.
+    if let Some(ref mut buf) = app.channels_adding {
+        match code {
+            KeyCode::Esc => {
+                app.channels_adding = None;
+            }
+            KeyCode::Enter => {
+                let channel = buf.trim().to_owned();
+                if !channel.is_empty() {
+                    if let Some(agent) = app.available_agents.get(app.channels_selected) {
+                        app.config
+                            .channels
+                            .entry(agent.id.clone())
+                            .or_default()
+                            .push(channel);
+                        match config::save_config(&app.config) {
+                            Ok(()) => app.status_line = "Channel added".to_owned(),
+                            Err(e) => app.status_line = format!("Save failed: {e}"),
+                        }
+                    }
+                }
+                app.channels_adding = None;
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Char(c) => {
+                buf.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let count = app.available_agents.len();
+
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.channels_open = false;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if count > 0 {
+                app.channels_selected = (app.channels_selected + 1) % count;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if count > 0 {
+                if app.channels_selected == 0 {
+                    app.channels_selected = count - 1;
+                } else {
+                    app.channels_selected -= 1;
+                }
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('a') => {
+            if app.channels_selected < count {
+                app.channels_adding = Some(String::new());
+            }
+        }
+        KeyCode::Char('x') => {
+            if let Some(agent) = app.available_agents.get(app.channels_selected) {
+                if let Some(channels) = app.config.channels.get_mut(&agent.id) {
+                    channels.pop();
+                    if channels.is_empty() {
+                        app.config.channels.remove(&agent.id);
+                    }
+                    match config::save_config(&app.config) {
+                        Ok(()) => app.status_line = "Channel removed".to_owned(),
                         Err(e) => app.status_line = format!("Save failed: {e}"),
                     }
                 }

@@ -235,8 +235,8 @@ pub fn is_git_repo(path: &Path) -> bool {
 
 /// Create a worktree inside `<repo-root>/.lattice/worktrees/<short-id>/`
 /// on a new branch `lattice/<short-id>` from HEAD.
-/// Returns the worktree path.
-pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
+/// Returns `(worktree_path, repo_root)`.
+pub fn create_worktree(repo_path: &Path) -> Result<(PathBuf, PathBuf)> {
     // Find the repo root
     let output = Command::new("git")
         .args(["-C", &repo_path.to_string_lossy(), "rev-parse", "--show-toplevel"])
@@ -286,12 +286,16 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
         anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
 
-    // Copy untracked build artifacts from the source repo so the worktree
-    // doesn't need a full install step.  Uses `cp -Rc` on macOS (APFS
-    // clonefile — near-instant copy-on-write) and `cp --reflink=auto -R`
-    // on Linux (btrfs/XFS reflinks, falls back to regular copy).
+    Ok((worktree_path, root))
+}
+
+/// Copy untracked build artifacts (node_modules, .next, etc.) from the
+/// source repo into the worktree so it doesn't need a full install step.
+/// This is meant to run in a background thread after the tmux session is
+/// already started, so the user isn't blocked waiting on large copies.
+pub fn copy_build_artifacts(repo_root: &Path, worktree_path: &Path) {
     for dir_name in &["node_modules", ".next", ".nuxt", "dist", "build", "target/debug"] {
-        let src = root.join(dir_name);
+        let src = repo_root.join(dir_name);
         if src.is_dir() {
             let dest = worktree_path.join(dir_name);
             if !dest.exists() {
@@ -299,8 +303,6 @@ pub fn create_worktree(repo_path: &Path) -> Result<PathBuf> {
             }
         }
     }
-
-    Ok(worktree_path)
 }
 
 /// Copy a directory tree using the fastest platform-available method.
