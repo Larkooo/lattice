@@ -16,8 +16,8 @@ use crate::{
     pathnav::EntryKind,
 };
 use settings::{
-    draw_channels_view, draw_dev_servers_view, draw_permissions_view, draw_settings_view,
-    draw_startup_cmds_view,
+    draw_channels_view, draw_dev_servers_view, draw_permissions_view, draw_router_settings_view,
+    draw_settings_view, draw_startup_cmds_view,
 };
 
 /// Format an epoch timestamp as a human-friendly relative duration (e.g. "3m", "1h 23m").
@@ -130,6 +130,8 @@ fn draw_main_screen(frame: &mut ratatui::Frame<'_>, app: &App) {
         draw_dev_servers_view(frame, sections[2], app);
     } else if app.channels_open {
         draw_channels_view(frame, sections[2], app);
+    } else if app.router_settings_open {
+        draw_router_settings_view(frame, sections[2], app);
     } else if app.permissions_open {
         draw_permissions_view(frame, sections[2], app);
     } else if app.settings_open {
@@ -319,6 +321,19 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let total = app.dashboard_row_count();
     let capacity = area.height.saturating_sub(4) as usize;
     let (start, end) = visible_range(total, app.selected_row, capacity.max(1));
+
+    // Show router status at the top if enabled
+    if app.is_router_enabled() {
+        let (label, style) = if app.router_alive {
+            ("\u{25C9} router".to_owned(), Style::default().fg(t.green))
+        } else if app.router_spawning {
+            ("\u{25C9} router starting\u{2026}".to_owned(), Style::default().fg(t.yellow))
+        } else {
+            ("\u{25C9} router offline".to_owned(), Style::default().fg(t.red))
+        };
+        lines.push(Line::from(Span::styled(label, style)));
+        lines.push(Line::from(""));
+    }
 
     if start > 0 {
         lines.push(Line::from(Span::styled("...", Style::default().fg(t.muted))));
@@ -974,6 +989,14 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 kb_last("esc", "back"),
             ]
             .concat()
+        }
+    } else if app.router_settings_open {
+        // ── Router settings sub-view ──
+        if app.router_settings_editing.is_some() {
+            [kb("enter", "save"), kb_last("esc", "cancel")].concat()
+        } else {
+            [kb("\u{2191}/\u{2193}", "navigate"), kb("enter", "edit/toggle"), kb_last("esc", "back")]
+                .concat()
         }
     } else if app.permissions_open {
         // ── Permissions sub-view ──
