@@ -313,14 +313,46 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     draw_summary_panel(frame, chunks[2], app);
 }
 
+fn count_decoration_lines(app: &App, start: usize, end: usize) -> usize {
+    let mut extra = 0;
+    let mut last_project: Option<String> =
+        if start > 0 { app.instances.get(start - 1).map(instance_project_name) } else { None };
+
+    for index in start..end {
+        if index < app.instances.len() {
+            let project = instance_project_name(&app.instances[index]);
+            if last_project.as_deref() != Some(&project) {
+                if last_project.is_some() {
+                    extra += 1; // blank separator between groups
+                }
+                extra += 1; // project header
+                last_project = Some(project);
+            }
+        } else if index == app.instances.len() {
+            extra += 1; // blank line before "new instance"
+        }
+    }
+
+    extra
+}
+
 fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let t = app.theme;
 
     let mut lines: Vec<Line> = Vec::new();
 
     let total = app.dashboard_row_count();
-    let capacity = area.height.saturating_sub(4) as usize;
-    let (start, end) = visible_range(total, app.selected_row, capacity.max(1));
+    let router_overhead = if app.is_router_enabled() { 2 } else { 0 };
+    let raw_capacity = (area.height as usize).saturating_sub(4 + router_overhead);
+
+    // First pass: estimate visible range to count decoration lines
+    let (est_start, est_end) = visible_range(total, app.selected_row, raw_capacity.max(1));
+    let decorations = count_decoration_lines(app, est_start, est_end);
+    let ellipsis = (if est_start > 0 { 1 } else { 0 }) + (if est_end < total { 1 } else { 0 });
+
+    // Second pass: recompute with accurate capacity
+    let capacity = raw_capacity.saturating_sub(decorations + ellipsis).max(1);
+    let (start, end) = visible_range(total, app.selected_row, capacity);
 
     // Show router status at the top if enabled
     if app.is_router_enabled() {
