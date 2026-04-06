@@ -324,6 +324,19 @@ pub fn attach_session(name: &str) -> Result<()> {
     }
 }
 
+/// Return the current working directory of the active pane in `name`,
+/// or `None` if the session doesn't exist or tmux can't report it.
+pub fn session_cwd(name: &str) -> Option<String> {
+    let target = format!("{name}:");
+    let out = run_tmux(&["display-message", "-p", "-t", &target, "#{pane_current_path}"]).ok()?;
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
 pub fn kill_session(name: &str) -> Result<()> {
     let status = Command::new("tmux")
         .arg("kill-session")

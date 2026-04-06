@@ -6,5 +6,6 @@ pub mod git;
 pub mod handlers;
 pub mod pathnav;
 pub mod router;
+pub mod state;
 pub mod tmux;
 pub mod ui;

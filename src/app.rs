@@ -9,7 +9,7 @@ use std::{
 
 use ratatui::layout::Rect;
 
-use crate::{agents, config, git, pathnav, router, tmux};
+use crate::{agents, config, git, pathnav, router, state, tmux};
 use agents::AgentDefinition;
 use pathnav::Browser;
 
@@ -296,6 +296,10 @@ pub struct App {
     pub header_tab_scroll_offsets: RefCell<Vec<usize>>,
     /// Session name to auto-attach after a background spawn completes.
     pub pending_attach: Option<String>,
+    /// In-memory mirror of the on-disk state file. Authoritative for
+    /// instance metadata; tmux is consulted only for liveness and ephemeral
+    /// pane data.
+    pub state: state::State,
 }
 
 #[derive(Debug, Clone)]
@@ -336,11 +340,13 @@ impl App {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (pr_tx, pr_rx) = mpsc::channel();
         let (spawn_tx, spawn_rx) = mpsc::channel();
+        let state = state::load();
 
         Self {
             available_agents: Vec::new(),
             instances: Vec::new(),
             dormant_instances: Vec::new(),
+            state,
             selected_row: 0,
             selected_tab: 0,
             modal: None,
@@ -589,9 +595,12 @@ impl App {
                 self.pr_cache.retain(|k, _| active_names.contains(k));
                 self.pending_pr_checks.retain(|k| active_names.contains(k));
 
-                // Rebuild the dormant worktree list from disk so it reflects
-                // the current state every refresh.
-                self.discover_dormant_instances();
+                // Sync state.json with the live world: adopt new sessions,
+                // drop entries whose worktree was deleted, refresh cheap
+                // metadata. Then rebuild the dormant list from state — no
+                // filesystem scans, just an in-memory partition by liveness.
+                self.reconcile_state(&all_session_names);
+                self.rebuild_dormant_from_state(&all_session_names);
 
                 // Router health check: auto-spawn/restart if configured.
                 self.check_router(&all_session_names);
@@ -653,47 +662,166 @@ impl App {
         self.last_refresh = Instant::now();
     }
 
-    /// Walk every known repo root and collect worktree dirs that have no
-    /// matching live tmux session. Live instances are matched by exact path
-    /// against the worktree dir, so a worktree shows up as dormant the
-    /// instant its tmux session dies (or never existed because the box
-    /// rebooted).
-    fn discover_dormant_instances(&mut self) {
-        // Live worktree paths — used to skip dirs that already have a session.
-        let live_paths: HashSet<String> = self
-            .instances
-            .iter()
-            .map(|i| i.session.pane_current_path.clone())
-            .filter(|p| !p.is_empty())
-            .collect();
+    /// Persist the in-memory state to disk. Called from every code path
+    /// that mutates `self.state`. Failures are logged to the status line —
+    /// they don't abort the operation, since losing the on-disk record is
+    /// usually less bad than aborting whatever the user just did.
+    fn persist_state(&mut self) {
+        if let Err(err) = state::save(&self.state) {
+            self.status_line = format!("state save failed: {err}");
+        }
+    }
 
-        // Seed known roots from disk + any roots derivable from live
-        // instances. Persist anything new so the next refresh (and next
-        // boot) finds the same set without depending on a live session.
-        let mut roots: Vec<PathBuf> = config::load_known_roots();
+    /// Insert/update an instance in state and persist it.
+    pub fn state_upsert(&mut self, inst: state::PersistedInstance) {
+        self.state.upsert(inst);
+        self.persist_state();
+    }
 
-        let add_root = |roots: &mut Vec<PathBuf>, root: PathBuf| {
-            if !roots.contains(&root) {
-                config::add_known_root(&root);
-                roots.push(root);
-            }
+    /// Remove an instance from state by session name and persist.
+    pub fn state_remove(&mut self, session_name: &str) {
+        self.state.remove(session_name);
+        self.persist_state();
+    }
+
+    /// Build a fresh PersistedInstance for a newly spawned session.
+    pub fn build_persisted(
+        &self,
+        session_name: String,
+        agent_id: String,
+        worktree_path: String,
+        repo_root: Option<PathBuf>,
+    ) -> state::PersistedInstance {
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let branch = if !worktree_path.is_empty() {
+            git::current_branch(std::path::Path::new(&worktree_path))
+        } else {
+            String::new()
         };
+        state::PersistedInstance {
+            session_name,
+            agent_id,
+            worktree_path,
+            repo_root: repo_root.map(|p| p.to_string_lossy().into_owned()),
+            created_at,
+            claude_session_id: None,
+            branch,
+            title: String::new(),
+            dev_server_session: None,
+            pr_state: None,
+            pr_number: None,
+        }
+    }
 
-        // Derive roots from any live instance whose cwd is a worktree dir.
-        for inst in &self.instances {
-            let p = std::path::Path::new(&inst.session.pane_current_path);
-            if let Some(root) = git::worktree_repo_root(p) {
-                add_root(&mut roots, root);
+    /// Bring `self.state` up to date with the world that exists outside the
+    /// state file: any live tmux session not yet tracked is added, and any
+    /// state entry whose worktree dir has been removed from disk is dropped.
+    /// Also runs the legacy filesystem-based discovery (Claude history,
+    /// known roots, /tmp title files) once to seed historical worktrees the
+    /// first time this code runs after the upgrade.
+    fn reconcile_state(&mut self, all_session_names: &HashSet<String>) {
+        let mut dirty = false;
+
+        // Adopt any live tmux session matching our naming convention that's
+        // not already in state. Lets users keep using lattice-launched
+        // sessions from before this change without losing them.
+        for name in all_session_names {
+            if self.state.get(name).is_some() {
+                continue;
+            }
+            let Some(agent_id) = agents::managed_session_agent_id(name) else { continue };
+            // Pull cwd from tmux for the new entry — we need it to know which
+            // worktree this session belongs to.
+            let cwd = tmux::session_cwd(name).unwrap_or_default();
+            let repo_root = if !cwd.is_empty() {
+                git::worktree_repo_root(std::path::Path::new(&cwd))
+            } else {
+                None
+            };
+            let inst = self.build_persisted(name.clone(), agent_id, cwd, repo_root);
+            self.state.upsert(inst);
+            dirty = true;
+        }
+
+        // Drop entries whose worktree was deleted from disk and which aren't
+        // currently live in tmux. (Live sessions are kept regardless — the
+        // user might be running outside a worktree.)
+        let before = self.state.instances.len();
+        self.state.instances.retain(|inst| {
+            let live = all_session_names.contains(&inst.session_name);
+            if live {
+                return true;
+            }
+            if inst.worktree_path.is_empty() {
+                return false;
+            }
+            std::path::Path::new(&inst.worktree_path).exists()
+        });
+        if self.state.instances.len() != before {
+            dirty = true;
+        }
+
+        // Refresh per-instance metadata that's cheap to recompute and may
+        // have changed: branch, claude_session_id, title (from /tmp).
+        for inst in self.state.instances.iter_mut() {
+            if inst.worktree_path.is_empty() {
+                continue;
+            }
+            let p = std::path::Path::new(&inst.worktree_path);
+            let new_branch = git::current_branch(p);
+            if new_branch != inst.branch {
+                inst.branch = new_branch;
+                dirty = true;
+            }
+            let new_session_id = agents::find_latest_claude_session_id(p);
+            if new_session_id != inst.claude_session_id {
+                inst.claude_session_id = new_session_id;
+                dirty = true;
+            }
+            let title_file = agents::read_title_file(&inst.session_name);
+            if !title_file.is_empty() && title_file != inst.title {
+                inst.title = title_file;
+                dirty = true;
             }
         }
 
-        // Also seed from the cwd Lattice was launched in, in case the user
-        // has never spawned an instance from this repo before — gives them
-        // dormant rows on first run after a reboot.
+        // First-launch bootstrap: when the state file doesn't yet exist,
+        // run the legacy filesystem walks once to discover historical
+        // worktrees from Claude transcripts. After the save() below the
+        // file exists and this branch never runs again — even if no
+        // history was found.
+        if !state::state_path().exists() {
+            self.bootstrap_scan_from_history();
+            dirty = true;
+        }
+
+        if dirty {
+            self.persist_state();
+        }
+    }
+
+    /// Walk Claude transcript history + every known root and add any
+    /// worktree dir we don't already track to state as a dormant entry.
+    /// This runs at most once per Lattice upgrade — once state.json
+    /// exists, future refreshes skip it entirely.
+    fn bootstrap_scan_from_history(&mut self) {
+        // Roots from the persisted known_roots file plus anything Claude's
+        // transcripts can teach us.
+        let mut roots: Vec<PathBuf> = config::load_known_roots();
+        for root in agents::discover_repo_roots_from_claude_history() {
+            if !roots.contains(&root) {
+                roots.push(root.clone());
+                config::add_known_root(&root);
+            }
+        }
+
+        // Also seed from cwd, in case nothing else has surfaced yet.
         if let Ok(cwd) = env::current_dir() {
             if let Some(root) = git::worktree_repo_root(&cwd).or_else(|| {
                 if git::is_git_repo(&cwd) {
-                    // Walk up to the toplevel for non-worktree cwds.
                     std::process::Command::new("git")
                         .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--show-toplevel"])
                         .stdout(std::process::Stdio::piped())
@@ -708,51 +836,83 @@ impl App {
                     None
                 }
             }) {
-                add_root(&mut roots, root);
+                if !roots.contains(&root) {
+                    roots.push(root.clone());
+                    config::add_known_root(&root);
+                }
             }
         }
 
-        // Bootstrap from Claude transcript history: every project dir under
-        // ~/.claude/projects/ whose name encodes a `.lattice/worktrees/` path
-        // points us at a repo root we should be scanning. This catches all
-        // historical repos in one shot, no matter where the user keeps them.
-        for root in agents::discover_repo_roots_from_claude_history() {
-            add_root(&mut roots, root);
-        }
+        let already_tracked: HashSet<String> =
+            self.state.instances.iter().map(|i| i.worktree_path.clone()).collect();
 
-        let mut dormant: Vec<DormantInstance> = Vec::new();
         for root in &roots {
             for wt in git::list_lattice_worktrees(root) {
                 let wt_str = wt.to_string_lossy().to_string();
-                if live_paths.contains(&wt_str) {
+                if already_tracked.contains(&wt_str) {
                     continue;
                 }
-                let branch = git::current_branch(&wt);
-                let claude_session_id = agents::find_latest_claude_session_id(&wt);
+                // We don't know the original session name. Synthesise one
+                // from the worktree id timestamp + claude (the dominant
+                // case); if a /tmp title file exists for that id we use it.
                 let id = wt
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let title_override =
-                    agents::find_title_for_worktree_id(&id).unwrap_or_default();
-                dormant.push(DormantInstance {
-                    worktree_path: wt,
-                    repo_root: root.clone(),
-                    branch,
+                let synth_session = format!("lattice_claude_{id}");
+                let title = agents::find_title_for_worktree_id(&id).unwrap_or_default();
+                let claude_session_id = agents::find_latest_claude_session_id(&wt);
+                let branch = git::current_branch(&wt);
+                let created_at = id.parse::<u64>().unwrap_or(0);
+
+                self.state.upsert(state::PersistedInstance {
+                    session_name: synth_session,
+                    agent_id: "claude".to_owned(),
+                    worktree_path: wt_str,
+                    repo_root: Some(root.to_string_lossy().into_owned()),
+                    created_at,
                     claude_session_id,
-                    title_override,
+                    branch,
+                    title,
+                    dev_server_session: None,
+                    pr_state: None,
+                    pr_number: None,
                 });
             }
         }
+    }
 
-        // Sort by project, then by worktree path (which is timestamp-based)
-        // descending so the newest survivors come first.
+    /// Build the dormant_instances list from `self.state` plus the live
+    /// session set. Cheap: pure in-memory work, no filesystem walks.
+    fn rebuild_dormant_from_state(&mut self, all_session_names: &HashSet<String>) {
+        let mut dormant: Vec<DormantInstance> = Vec::new();
+        for inst in &self.state.instances {
+            if all_session_names.contains(&inst.session_name) {
+                continue; // live, not dormant
+            }
+            if inst.worktree_path.is_empty() {
+                continue; // can't resume something with no cwd
+            }
+            let worktree_path = PathBuf::from(&inst.worktree_path);
+            let repo_root = inst
+                .repo_root
+                .as_deref()
+                .map(PathBuf::from)
+                .or_else(|| git::worktree_repo_root(&worktree_path))
+                .unwrap_or_else(|| worktree_path.clone());
+            dormant.push(DormantInstance {
+                worktree_path,
+                repo_root,
+                branch: inst.branch.clone(),
+                claude_session_id: inst.claude_session_id.clone(),
+                title_override: inst.title.clone(),
+            });
+        }
         dormant.sort_by(|a, b| {
             a.project_name()
                 .cmp(&b.project_name())
                 .then_with(|| b.worktree_path.cmp(&a.worktree_path))
         });
-
         self.dormant_instances = dormant;
     }
 
@@ -936,6 +1096,16 @@ impl App {
             }
         }
 
+        // Persist the new instance to state.json so it survives reboots
+        // and refreshes don't have to rediscover it.
+        let persisted = self.build_persisted(
+            session_name.clone(),
+            agent.id.clone(),
+            launch_dir.clone(),
+            repo_root.clone(),
+        );
+        self.state_upsert(persisted);
+
         // Auto-attach immediately — the agent CLI is already launching.
         self.pending_attach = Some(session_name.clone());
         self.refresh();
@@ -1032,6 +1202,30 @@ impl App {
                 self.status_line =
                     format!("Resuming Claude in {}", dormant.display_title());
                 self.pending_attach = Some(session_name.clone());
+
+                // Remove any synthetic state entry that matched this
+                // worktree path — the new live session will replace it.
+                let wt_str = dormant.worktree_path.to_string_lossy().into_owned();
+                let stale: Vec<String> = self
+                    .state
+                    .instances
+                    .iter()
+                    .filter(|i| i.worktree_path == wt_str && i.session_name != session_name)
+                    .map(|i| i.session_name.clone())
+                    .collect();
+                for name in stale {
+                    self.state.remove(&name);
+                }
+
+                // Persist the new live instance to state.
+                let persisted = self.build_persisted(
+                    session_name.clone(),
+                    agent.id.clone(),
+                    launch_dir.clone(),
+                    Some(dormant.repo_root.clone()),
+                );
+                self.state_upsert(persisted);
+
                 // Drop the dormant entry locally — the next refresh will
                 // reclassify it as a live instance anyway.
                 self.dormant_instances.remove(index);
@@ -1161,6 +1355,10 @@ impl App {
     pub fn drain_stop_results(&mut self) {
         while let Ok(result) = self.stop_rx.try_recv() {
             self.stopping_sessions.remove(&result.session_name);
+            // The session is gone from tmux *and* its worktree was cleaned
+            // up — drop the persistent record too so it doesn't reappear
+            // as a dormant entry on the next refresh.
+            self.state_remove(&result.session_name);
             self.status_line = result.message;
             // Force a refresh so the stopped instance disappears from the list
             self.last_refresh = Instant::now() - self.refresh_interval;
