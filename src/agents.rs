@@ -252,6 +252,83 @@ pub fn claude_project_dir_name(cwd: &Path) -> String {
         .collect()
 }
 
+/// Read the title file for a worktree directory. Title files are written by
+/// the agent to `/tmp/lattice_<session_name>.title`, where the session name
+/// is `lattice_<agent>_<timestamp>` and the timestamp matches the worktree
+/// dir id. After a tmux server death the original session name is lost, so
+/// we glob for any file in `/tmp` whose name ends with `_<worktree_id>.title`
+/// and return its contents.
+pub fn find_title_for_worktree_id(worktree_id: &str) -> Option<String> {
+    let suffix = format!("_{worktree_id}.title");
+    let entries = fs::read_dir("/tmp").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("lattice_") && name_str.ends_with(&suffix) {
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Pull the `cwd` field out of a Claude `.jsonl` transcript by slurping the
+/// first 8KB and string-searching for `"cwd":"..."`. Cheap and reliable: the
+/// cwd appears in the first user message, well within 8KB.
+fn read_cwd_from_claude_transcript(jsonl_path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = fs::File::open(jsonl_path).ok()?;
+    let mut buf = [0u8; 8192];
+    let n = file.read(&mut buf).ok()?;
+    let text = std::str::from_utf8(&buf[..n]).ok()?;
+    let needle = "\"cwd\":\"";
+    let start = text.find(needle)? + needle.len();
+    let rest = &text[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_owned())
+}
+
+/// Walk `~/.claude/projects/` for project directories whose name contains
+/// `--lattice-worktrees-` (i.e. the encoded form of `/.lattice/worktrees/`),
+/// read each one's first transcript to recover the unencoded cwd, and return
+/// the unique repo roots derived from those cwds. This is how Lattice
+/// rediscovers worktrees in repos it has never spawned from in the current
+/// process — including all the historical repos from before this feature
+/// existed.
+pub fn discover_repo_roots_from_claude_history() -> Vec<PathBuf> {
+    let Ok(home) = env::var("HOME") else { return Vec::new() };
+    let projects = PathBuf::from(home).join(".claude").join("projects");
+    let Ok(entries) = fs::read_dir(&projects) else { return Vec::new() };
+
+    let mut roots: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().contains("--lattice-worktrees-") {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(jsonl_iter) = fs::read_dir(&dir) else { continue };
+        for jentry in jsonl_iter.flatten() {
+            let jpath = jentry.path();
+            if jpath.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(cwd) = read_cwd_from_claude_transcript(&jpath) {
+                let cwd_path = Path::new(&cwd);
+                if let Some(root) = crate::git::worktree_repo_root(cwd_path) {
+                    roots.insert(root);
+                }
+                break; // One transcript per project dir is enough.
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
 /// Find the most recently modified Claude conversation transcript for `cwd`,
 /// returning its UUID (the `.jsonl` filename stem) so it can be passed to
 /// `claude --resume`.

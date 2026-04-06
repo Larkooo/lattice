@@ -41,6 +41,9 @@ pub struct DormantInstance {
     pub branch: String,
     /// UUID of the most recent Claude conversation in this worktree, if any.
     pub claude_session_id: Option<String>,
+    /// Title written by the agent to its `.title` file, recovered by matching
+    /// the worktree id against `/tmp/lattice_*_<id>.title`.
+    pub title_override: String,
 }
 
 impl DormantInstance {
@@ -57,11 +60,17 @@ impl DormantInstance {
     }
 
     pub fn display_title(&self) -> String {
-        // Prefer the branch name (without the lattice/ prefix) since the
-        // worktree dir name is just an opaque timestamp.
+        // 1. Title file written by the agent (highest priority — matches the
+        //    behaviour of live instances).
+        let trimmed = self.title_override.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+        // 2. Branch name (without the lattice/ prefix).
         if !self.branch.is_empty() {
             return self.branch.trim_start_matches("lattice/").to_owned();
         }
+        // 3. Bare worktree dir id.
         self.worktree_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -663,14 +672,18 @@ impl App {
         // boot) finds the same set without depending on a live session.
         let mut roots: Vec<PathBuf> = config::load_known_roots();
 
+        let add_root = |roots: &mut Vec<PathBuf>, root: PathBuf| {
+            if !roots.contains(&root) {
+                config::add_known_root(&root);
+                roots.push(root);
+            }
+        };
+
         // Derive roots from any live instance whose cwd is a worktree dir.
         for inst in &self.instances {
             let p = std::path::Path::new(&inst.session.pane_current_path);
             if let Some(root) = git::worktree_repo_root(p) {
-                if !roots.contains(&root) {
-                    roots.push(root.clone());
-                    config::add_known_root(&root);
-                }
+                add_root(&mut roots, root);
             }
         }
 
@@ -695,11 +708,16 @@ impl App {
                     None
                 }
             }) {
-                if !roots.contains(&root) {
-                    roots.push(root.clone());
-                    config::add_known_root(&root);
-                }
+                add_root(&mut roots, root);
             }
+        }
+
+        // Bootstrap from Claude transcript history: every project dir under
+        // ~/.claude/projects/ whose name encodes a `.lattice/worktrees/` path
+        // points us at a repo root we should be scanning. This catches all
+        // historical repos in one shot, no matter where the user keeps them.
+        for root in agents::discover_repo_roots_from_claude_history() {
+            add_root(&mut roots, root);
         }
 
         let mut dormant: Vec<DormantInstance> = Vec::new();
@@ -711,11 +729,18 @@ impl App {
                 }
                 let branch = git::current_branch(&wt);
                 let claude_session_id = agents::find_latest_claude_session_id(&wt);
+                let id = wt
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let title_override =
+                    agents::find_title_for_worktree_id(&id).unwrap_or_default();
                 dormant.push(DormantInstance {
                     worktree_path: wt,
                     repo_root: root.clone(),
                     branch,
                     claude_session_id,
+                    title_override,
                 });
             }
         }
