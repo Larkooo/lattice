@@ -399,7 +399,24 @@ pub fn handle_main_key(
                 }
             }
         }
-        KeyCode::Char('x') => app.kill_selected_instance(),
+        KeyCode::Char('x') => {
+            if let Some(dormant) = app.selected_dormant().cloned() {
+                match git::remove_worktree(&dormant.worktree_path) {
+                    Ok(()) => {
+                        app.status_line = format!(
+                            "Removed dormant worktree {}",
+                            dormant.display_title()
+                        );
+                        app.refresh();
+                    }
+                    Err(err) => {
+                        app.status_line = format!("Failed to remove worktree: {err}");
+                    }
+                }
+            } else {
+                app.kill_selected_instance();
+            }
+        }
         KeyCode::Char('f') => {
             if let Some(instance) = app.active_instance_ref().cloned() {
                 if instance.pr_state != Some(git::PrState::Open) {
@@ -518,6 +535,9 @@ pub fn handle_main_key(
                 app.settings_editing = None;
             } else if app.selected_tab == 0 && app.is_action_row_selected() {
                 app.open_spawn_modal();
+            } else if app.selected_dormant().is_some() {
+                let dormant_index = app.selected_row - app.instances.len();
+                app.resume_dormant(dormant_index);
             } else if let Some(instance) = app.active_instance_ref() {
                 let name = instance.session.name.clone();
                 let attach_result = attach_into_session(terminal, &name);

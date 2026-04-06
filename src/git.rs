@@ -340,6 +340,33 @@ pub fn is_worktree_path(path: &Path) -> bool {
     s.contains("/.lattice/worktrees/") || s.contains("\\.lattice\\worktrees\\")
 }
 
+/// Given a worktree path like `<root>/.lattice/worktrees/<id>`, return `<root>`.
+/// Returns `None` if the path doesn't match the expected layout.
+pub fn worktree_repo_root(worktree_path: &Path) -> Option<PathBuf> {
+    let s = worktree_path.to_string_lossy();
+    let idx = s.find("/.lattice/worktrees/")?;
+    Some(PathBuf::from(&s[..idx]))
+}
+
+/// List worktree directories under `<repo_root>/.lattice/worktrees/`.
+/// Each entry is the absolute path to a directory that still has a `.git`
+/// file (i.e. a real, mountable git worktree). Stale dirs left over from
+/// failed cleanups are skipped.
+pub fn list_lattice_worktrees(repo_root: &Path) -> Vec<PathBuf> {
+    let dir = repo_root.join(".lattice").join("worktrees");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && path.join(".git").exists() {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Remove a worktree and its associated branch.
 /// `worktree_path` should be the path inside `.lattice/worktrees/<id>/`.
 /// The branch name is derived as `lattice/<id>`.
@@ -538,6 +565,15 @@ mod tests {
     #[test]
     fn is_git_repo_false_for_tmp() {
         assert!(!is_git_repo(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn worktree_repo_root_strips_lattice_suffix() {
+        assert_eq!(
+            worktree_repo_root(Path::new("/Users/me/dev/foo/.lattice/worktrees/123")),
+            Some(PathBuf::from("/Users/me/dev/foo"))
+        );
+        assert_eq!(worktree_repo_root(Path::new("/Users/me/dev/foo")), None);
     }
 
     #[test]

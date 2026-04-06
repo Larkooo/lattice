@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
+    path::PathBuf,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -26,6 +27,46 @@ pub struct AgentInstance {
     pub pr_number: Option<u32>,
     pub pr_checks: Option<git::PrChecksSummary>,
     pub branch: String,
+}
+
+/// A worktree that exists on disk under `.lattice/worktrees/` but has no
+/// live tmux session attached. These appear after a reboot — the tmux
+/// server died but the git worktrees survived. They can be resumed from
+/// the dashboard, which spawns a fresh tmux session in the same dir and,
+/// for Claude, reattaches to the latest conversation via `--resume`.
+#[derive(Debug, Clone)]
+pub struct DormantInstance {
+    pub worktree_path: PathBuf,
+    pub repo_root: PathBuf,
+    pub branch: String,
+    /// UUID of the most recent Claude conversation in this worktree, if any.
+    pub claude_session_id: Option<String>,
+}
+
+impl DormantInstance {
+    pub fn project_name(&self) -> String {
+        if let Ok(home) = env::var("HOME") {
+            if self.repo_root.as_os_str().to_string_lossy() == home {
+                return "~".to_owned();
+            }
+        }
+        self.repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    pub fn display_title(&self) -> String {
+        // Prefer the branch name (without the lattice/ prefix) since the
+        // worktree dir name is just an opaque timestamp.
+        if !self.branch.is_empty() {
+            return self.branch.trim_start_matches("lattice/").to_owned();
+        }
+        self.worktree_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
 }
 
 /// Returns a sort key and display label for the category an instance belongs to.
@@ -178,6 +219,9 @@ impl HeaderTabRegion {
 pub struct App {
     pub available_agents: Vec<AgentDefinition>,
     pub instances: Vec<AgentInstance>,
+    /// Worktrees on disk with no live tmux session — survivors of a reboot
+    /// or a Lattice quit. Rendered on the dashboard below live instances.
+    pub dormant_instances: Vec<DormantInstance>,
     pub selected_row: usize,
     pub selected_tab: usize,
     pub modal: Option<SpawnModal>,
@@ -287,6 +331,7 @@ impl App {
         Self {
             available_agents: Vec::new(),
             instances: Vec::new(),
+            dormant_instances: Vec::new(),
             selected_row: 0,
             selected_tab: 0,
             modal: None,
@@ -535,6 +580,10 @@ impl App {
                 self.pr_cache.retain(|k, _| active_names.contains(k));
                 self.pending_pr_checks.retain(|k| active_names.contains(k));
 
+                // Rebuild the dormant worktree list from disk so it reflects
+                // the current state every refresh.
+                self.discover_dormant_instances();
+
                 // Router health check: auto-spawn/restart if configured.
                 self.check_router(&all_session_names);
 
@@ -595,8 +644,117 @@ impl App {
         self.last_refresh = Instant::now();
     }
 
+    /// Walk every known repo root and collect worktree dirs that have no
+    /// matching live tmux session. Live instances are matched by exact path
+    /// against the worktree dir, so a worktree shows up as dormant the
+    /// instant its tmux session dies (or never existed because the box
+    /// rebooted).
+    fn discover_dormant_instances(&mut self) {
+        // Live worktree paths — used to skip dirs that already have a session.
+        let live_paths: HashSet<String> = self
+            .instances
+            .iter()
+            .map(|i| i.session.pane_current_path.clone())
+            .filter(|p| !p.is_empty())
+            .collect();
+
+        // Seed known roots from disk + any roots derivable from live
+        // instances. Persist anything new so the next refresh (and next
+        // boot) finds the same set without depending on a live session.
+        let mut roots: Vec<PathBuf> = config::load_known_roots();
+
+        // Derive roots from any live instance whose cwd is a worktree dir.
+        for inst in &self.instances {
+            let p = std::path::Path::new(&inst.session.pane_current_path);
+            if let Some(root) = git::worktree_repo_root(p) {
+                if !roots.contains(&root) {
+                    roots.push(root.clone());
+                    config::add_known_root(&root);
+                }
+            }
+        }
+
+        // Also seed from the cwd Lattice was launched in, in case the user
+        // has never spawned an instance from this repo before — gives them
+        // dormant rows on first run after a reboot.
+        if let Ok(cwd) = env::current_dir() {
+            if let Some(root) = git::worktree_repo_root(&cwd).or_else(|| {
+                if git::is_git_repo(&cwd) {
+                    // Walk up to the toplevel for non-worktree cwds.
+                    std::process::Command::new("git")
+                        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--show-toplevel"])
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::null())
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| {
+                            PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                        })
+                } else {
+                    None
+                }
+            }) {
+                if !roots.contains(&root) {
+                    roots.push(root.clone());
+                    config::add_known_root(&root);
+                }
+            }
+        }
+
+        let mut dormant: Vec<DormantInstance> = Vec::new();
+        for root in &roots {
+            for wt in git::list_lattice_worktrees(root) {
+                let wt_str = wt.to_string_lossy().to_string();
+                if live_paths.contains(&wt_str) {
+                    continue;
+                }
+                let branch = git::current_branch(&wt);
+                let claude_session_id = agents::find_latest_claude_session_id(&wt);
+                dormant.push(DormantInstance {
+                    worktree_path: wt,
+                    repo_root: root.clone(),
+                    branch,
+                    claude_session_id,
+                });
+            }
+        }
+
+        // Sort by project, then by worktree path (which is timestamp-based)
+        // descending so the newest survivors come first.
+        dormant.sort_by(|a, b| {
+            a.project_name()
+                .cmp(&b.project_name())
+                .then_with(|| b.worktree_path.cmp(&a.worktree_path))
+        });
+
+        self.dormant_instances = dormant;
+    }
+
     pub fn dashboard_row_count(&self) -> usize {
-        self.instances.len() + 2 // + action row + settings row
+        // live instances + dormant instances + action row + settings row
+        self.instances.len() + self.dormant_instances.len() + 2
+    }
+
+    /// Index of the "+ new instance" action row.
+    pub fn action_row_index(&self) -> usize {
+        self.instances.len() + self.dormant_instances.len()
+    }
+
+    /// Index of the "# settings" row.
+    pub fn settings_row_index(&self) -> usize {
+        self.instances.len() + self.dormant_instances.len() + 1
+    }
+
+    /// Returns the dormant instance at the selected row, if any.
+    pub fn selected_dormant(&self) -> Option<&DormantInstance> {
+        let start = self.instances.len();
+        let end = start + self.dormant_instances.len();
+        if self.selected_tab == 0 && self.selected_row >= start && self.selected_row < end {
+            self.dormant_instances.get(self.selected_row - start)
+        } else {
+            None
+        }
     }
 
     pub fn clamp_selection(&mut self) {
@@ -639,11 +797,11 @@ impl App {
     }
 
     pub fn is_action_row_selected(&self) -> bool {
-        self.selected_tab == 0 && self.selected_row == self.instances.len()
+        self.selected_tab == 0 && self.selected_row == self.action_row_index()
     }
 
     pub fn is_settings_row_selected(&self) -> bool {
-        self.selected_tab == 0 && self.selected_row == self.instances.len() + 1
+        self.selected_tab == 0 && self.selected_row == self.settings_row_index()
     }
 
     pub fn next_row(&mut self) {
@@ -723,7 +881,12 @@ impl App {
         let (launch_dir, repo_root) =
             if self.config.git_worktrees && git::is_git_repo(std::path::Path::new(&working_dir)) {
                 match git::create_worktree(std::path::Path::new(&working_dir)) {
-                    Ok((wt_path, root)) => (wt_path.to_string_lossy().to_string(), Some(root)),
+                    Ok((wt_path, root)) => {
+                        // Remember this root so dormant worktrees in this repo
+                        // can be rediscovered after a reboot.
+                        config::add_known_root(&root);
+                        (wt_path.to_string_lossy().to_string(), Some(root))
+                    }
                     Err(_) => (working_dir.clone(), None),
                 }
             } else {
@@ -809,6 +972,56 @@ impl App {
                 dev_server_session,
             });
         });
+    }
+
+    /// Resume a dormant worktree by spawning a fresh tmux session in its
+    /// directory. If a Claude transcript exists for that cwd, the agent is
+    /// launched with `claude --resume <session-id>` so the conversation
+    /// picks back up. Otherwise it's a fresh launch.
+    pub fn resume_dormant(&mut self, index: usize) {
+        let Some(dormant) = self.dormant_instances.get(index).cloned() else {
+            self.status_line = "No dormant instance at that row".to_owned();
+            return;
+        };
+
+        // Find the Claude agent. Resume currently only supports Claude — for
+        // other agents we'd need their own resume mechanism.
+        let Some(agent) = self.available_agents.iter().find(|a| a.id == "claude").cloned() else {
+            self.status_line = "Claude CLI not detected — cannot resume".to_owned();
+            return;
+        };
+
+        let Some(session_id) = dormant.claude_session_id.clone() else {
+            self.status_line =
+                "No Claude transcript for this worktree — open it manually instead".to_owned();
+            return;
+        };
+
+        let session_name = agents::build_managed_session_name(&agent.id);
+        let bypass_enabled = config::is_bypass_enabled(&self.config, &agent.id);
+        let launch_cmd = agents::build_claude_resume_command(&agent, bypass_enabled, &session_id);
+        let launch_dir = dormant.worktree_path.to_string_lossy().to_string();
+
+        match tmux::create_session(&session_name, &launch_dir, &launch_cmd) {
+            Ok(()) => {
+                self.status_line =
+                    format!("Resuming Claude in {}", dormant.display_title());
+                self.pending_attach = Some(session_name.clone());
+                // Drop the dormant entry locally — the next refresh will
+                // reclassify it as a live instance anyway.
+                self.dormant_instances.remove(index);
+                self.refresh();
+                if let Some(pos) =
+                    self.instances.iter().position(|x| x.session.name == session_name)
+                {
+                    self.selected_row = pos;
+                    self.selected_tab = pos + 1;
+                }
+            }
+            Err(err) => {
+                self.status_line = format!("Failed to resume: {err}");
+            }
+        }
     }
 
     pub fn kill_selected_instance(&mut self) {
