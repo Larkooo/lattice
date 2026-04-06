@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
@@ -169,6 +169,50 @@ impl Default for AppConfig {
 pub fn config_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_owned());
     PathBuf::from(home).join(".config").join("lattice").join("config.toml")
+}
+
+/// Sidecar file that records every git repo root Lattice has ever spawned a
+/// worktree from. Used to rediscover dormant worktrees after a reboot, when
+/// no live tmux sessions remain to point at the right repos.
+pub fn known_roots_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join(".config").join("lattice").join("known_roots.txt")
+}
+
+pub fn load_known_roots() -> Vec<PathBuf> {
+    let path = known_roots_path();
+    let Ok(contents) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+pub fn save_known_roots(roots: &[PathBuf]) {
+    let path = known_roots_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let body = roots
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = fs::write(&path, body);
+}
+
+/// Add a repo root to the persisted set if it isn't already present.
+pub fn add_known_root(root: &Path) {
+    let mut existing = load_known_roots();
+    if existing.iter().any(|p| p == root) {
+        return;
+    }
+    existing.push(root.to_path_buf());
+    save_known_roots(&existing);
 }
 
 pub fn load_config() -> AppConfig {

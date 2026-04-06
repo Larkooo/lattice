@@ -224,6 +224,68 @@ pub fn needs_title_injection(agent: &AgentDefinition) -> bool {
     agent.prompt_flag.is_none()
 }
 
+/// Build a Claude launch command that resumes a specific past conversation by ID.
+/// `session_id` is the UUID stem of a `.jsonl` transcript under
+/// `~/.claude/projects/<encoded-cwd>/`.
+pub fn build_claude_resume_command(
+    agent: &AgentDefinition,
+    bypass_enabled: bool,
+    session_id: &str,
+) -> String {
+    let mut cmd = format!("{} --resume {}", agent.launch, session_id);
+    if bypass_enabled {
+        if let Some(flag) = &agent.bypass_flag {
+            cmd = format!("{} {}", cmd, flag);
+        }
+    }
+    cmd
+}
+
+/// Encode a cwd into the directory name Claude uses under
+/// `~/.claude/projects/`. Every `/` and `.` is replaced with `-`, leaving all
+/// other characters intact. So `/Users/me/foo/.lattice/worktrees/123` becomes
+/// `-Users-me-foo--lattice-worktrees-123`.
+pub fn claude_project_dir_name(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
+/// Find the most recently modified Claude conversation transcript for `cwd`,
+/// returning its UUID (the `.jsonl` filename stem) so it can be passed to
+/// `claude --resume`.
+///
+/// Claude stores transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`.
+/// We pick the newest mtime — if you ran multiple conversations in the same
+/// dir, this is the one you most likely want back.
+pub fn find_latest_claude_session_id(cwd: &Path) -> Option<String> {
+    let home = env::var("HOME").ok()?;
+    let dir = PathBuf::from(home)
+        .join(".claude")
+        .join("projects")
+        .join(claude_project_dir_name(cwd));
+
+    let entries = fs::read_dir(&dir).ok()?;
+    let mut newest: Option<(SystemTime, String)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        match &newest {
+            None => newest = Some((mtime, stem)),
+            Some((m, _)) if &mtime > m => newest = Some((mtime, stem)),
+            _ => {}
+        }
+    }
+    newest.map(|(_, id)| id)
+}
+
 /// Path to the title file for a session: `/tmp/lattice_{name}.title`
 pub fn title_file_path(session_name: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/lattice_{session_name}.title"))
@@ -576,6 +638,37 @@ mod tests {
         let cmd = build_launch_command(&agent, "lattice_claude_999", false, false, &channels);
         assert!(cmd.contains("--channels plugin:imessage@claude-plugins-official"));
         assert!(cmd.contains("--channels plugin:slack@claude-plugins-official"));
+    }
+
+    #[test]
+    fn claude_project_dir_name_matches_real_layout() {
+        // Verified against an actual on-disk Claude transcript dir.
+        assert_eq!(
+            claude_project_dir_name(Path::new("/Users/nas/dev/lattice/.lattice/worktrees/1775503732")),
+            "-Users-nas-dev-lattice--lattice-worktrees-1775503732"
+        );
+        assert_eq!(
+            claude_project_dir_name(Path::new("/Users/me/dev/app-store-connect")),
+            "-Users-me-dev-app-store-connect"
+        );
+    }
+
+    #[test]
+    fn build_claude_resume_command_includes_session_id() {
+        let agent = AgentDefinition {
+            id: "claude".to_owned(),
+            label: "Claude Code".to_owned(),
+            binary: "claude".to_owned(),
+            launch: "claude".to_owned(),
+            prompt_flag: Some("--append-system-prompt".to_owned()),
+            bypass_flag: Some("--dangerously-skip-permissions".to_owned()),
+        };
+
+        let cmd = build_claude_resume_command(&agent, true, "abc-123");
+        assert_eq!(cmd, "claude --resume abc-123 --dangerously-skip-permissions");
+
+        let cmd = build_claude_resume_command(&agent, false, "abc-123");
+        assert_eq!(cmd, "claude --resume abc-123");
     }
 
     #[test]

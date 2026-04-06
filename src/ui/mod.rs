@@ -339,15 +339,30 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled("...", Style::default().fg(t.muted))));
     }
 
+    // Returns the project name for any dashboard row that has one (live or
+    // dormant). Returns None for the action/settings rows so we don't try to
+    // render a header for them.
+    let live_count = app.instances.len();
+    let dormant_count = app.dormant_instances.len();
+    let project_at = |idx: usize| -> Option<String> {
+        if idx < live_count {
+            Some(instance_project_name(&app.instances[idx]))
+        } else if idx < live_count + dormant_count {
+            Some(app.dormant_instances[idx - live_count].project_name())
+        } else {
+            None
+        }
+    };
+
     // Track which project header was last rendered so we insert one on change.
     let prev_project: Option<String> =
-        if start > 0 { app.instances.get(start - 1).map(instance_project_name) } else { None };
+        if start > 0 { project_at(start - 1) } else { None };
     let mut last_project = prev_project;
 
     for index in start..end {
         let selected = index == app.selected_row;
 
-        if index < app.instances.len() {
+        if index < live_count {
             let instance = &app.instances[index];
             let project = instance_project_name(instance);
 
@@ -431,7 +446,38 @@ fn draw_instance_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             };
 
             lines.push(Line::from(Span::styled(label, style)));
-        } else if index == app.instances.len() {
+        } else if index < live_count + dormant_count {
+            // Dormant worktree row — survivor of a reboot or quit.
+            let dormant = &app.dormant_instances[index - live_count];
+            let project = dormant.project_name();
+
+            if last_project.as_deref() != Some(&project) {
+                if last_project.is_some() {
+                    lines.push(Line::from(""));
+                }
+                let header = if project.is_empty() {
+                    "~ unknown ~".to_owned()
+                } else {
+                    format!("~ {project} ~")
+                };
+                lines.push(Line::from(Span::styled(header, Style::default().fg(t.accent))));
+                last_project = Some(project);
+            }
+
+            let title = dormant.display_title();
+            let resumable = dormant.claude_session_id.is_some();
+            let label = if resumable {
+                format!("z {} (resumable)", truncate(&title, 18))
+            } else {
+                format!("z {}", truncate(&title, 28))
+            };
+            let style = if selected {
+                Style::default().fg(t.bg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.muted)
+            };
+            lines.push(Line::from(Span::styled(label, style)));
+        } else if index == app.action_row_index() {
             // "New Instance" action row
             if !lines.is_empty() {
                 lines.push(Line::from(""));
@@ -550,7 +596,75 @@ fn draw_summary_panel(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 Span::styled(c.notifications.sound_command.clone(), Style::default().fg(t.text)),
             ]),
         ]
-    } else if app.is_action_row_selected() || app.instances.is_empty() {
+    } else if let Some(dormant) = app.selected_dormant() {
+        let mut l = vec![
+            Line::from(Span::styled(
+                dormant.display_title(),
+                Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled("dormant worktree", Style::default().fg(t.muted))),
+            Line::from(""),
+        ];
+
+        let resumable = dormant.claude_session_id.is_some();
+        let (state_label, state_style) = if resumable {
+            ("resumable (claude transcript found)", Style::default().fg(t.green))
+        } else {
+            ("no claude transcript — would launch fresh", Style::default().fg(t.muted))
+        };
+        l.push(Line::from(vec![
+            Span::styled("state    ", Style::default().fg(t.muted)),
+            Span::styled(state_label, state_style),
+        ]));
+
+        if !dormant.branch.is_empty() {
+            l.push(Line::from(vec![
+                Span::styled("branch   ", Style::default().fg(t.muted)),
+                Span::styled(dormant.branch.clone(), Style::default().fg(t.text)),
+            ]));
+        }
+
+        l.push(Line::from(vec![
+            Span::styled("path     ", Style::default().fg(t.muted)),
+            Span::styled(
+                dormant.worktree_path.to_string_lossy().into_owned(),
+                Style::default().fg(t.text),
+            ),
+        ]));
+
+        if let Some(ref id) = dormant.claude_session_id {
+            l.push(Line::from(vec![
+                Span::styled("session  ", Style::default().fg(t.muted)),
+                Span::styled(id.clone(), Style::default().fg(t.text)),
+            ]));
+        }
+
+        l.push(Line::from(""));
+        if resumable {
+            l.push(Line::from(Span::styled(
+                "Press enter to resume Claude in this worktree.",
+                Style::default().fg(t.text),
+            )));
+        } else {
+            l.push(Line::from(Span::styled(
+                "No transcript to resume. Press x to remove the worktree,",
+                Style::default().fg(t.text),
+            )));
+            l.push(Line::from(Span::styled(
+                "or use + new instance to start fresh in this dir.",
+                Style::default().fg(t.text),
+            )));
+        }
+        l.push(Line::from(""));
+        l.push(Line::from(Span::styled(
+            "x  remove worktree",
+            Style::default().fg(t.muted),
+        )));
+
+        l
+    } else if app.is_action_row_selected()
+        || (app.instances.is_empty() && app.dormant_instances.is_empty())
+    {
         let mut l = vec![
             Line::from(Span::styled(
                 "new instance",
@@ -1048,10 +1162,17 @@ fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
         s.extend(kb("n", "new"));
 
+        let dormant = if on_dashboard { app.selected_dormant() } else { None };
+
         if on_dashboard && app.is_action_row_selected() {
             s.extend(kb("enter", "spawn"));
         } else if on_dashboard && app.is_settings_row_selected() {
             s.extend(kb("enter", "settings"));
+        } else if let Some(d) = dormant {
+            if d.claude_session_id.is_some() {
+                s.extend(kb("enter", "resume"));
+            }
+            s.extend(kb("x", "remove"));
         } else if active.is_some() {
             s.extend(kb("enter", "attach"));
             s.extend(kb("t", "terminal"));
