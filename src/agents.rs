@@ -68,7 +68,7 @@ const KNOWN_AGENTS: &[KnownAgent] = &[
         binary: "codex",
         launch: "codex",
         prompt_flag: None,
-        bypass_flag: Some("--full-auto"),
+        bypass_flag: Some("--dangerously-bypass-approvals-and-sandbox"),
     },
     KnownAgent {
         id: "claude",
@@ -642,7 +642,7 @@ mod tests {
             binary: "codex".to_owned(),
             launch: "codex".to_owned(),
             prompt_flag: None,
-            bypass_flag: Some("--full-auto".to_owned()),
+            bypass_flag: Some("--dangerously-bypass-approvals-and-sandbox".to_owned()),
         }];
 
         let found = classify_agent_from_session("freeform", "codex", &available)
@@ -686,10 +686,10 @@ mod tests {
             binary: "codex".to_owned(),
             launch: "codex".to_owned(),
             prompt_flag: None,
-            bypass_flag: Some("--full-auto".to_owned()),
+            bypass_flag: Some("--dangerously-bypass-approvals-and-sandbox".to_owned()),
         };
         let cmd = build_launch_command(&agent, "lattice_codex_999", false, true, &[]);
-        assert_eq!(cmd, "codex --full-auto");
+        assert_eq!(cmd, "codex --dangerously-bypass-approvals-and-sandbox");
     }
 
     #[test]
